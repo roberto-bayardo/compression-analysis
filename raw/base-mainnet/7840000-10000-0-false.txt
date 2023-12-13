@@ -1,14 +1,4 @@
 Starting block: 7840000, min tx sample size: 10000, min tx size: 0, span batch mode: false
-1000 out of 10000
-2000 out of 10000
-3000 out of 10000
-4000 out of 10000
-5000 out of 10000
-6000 out of 10000
-7000 out of 10000
-8000 out of 10000
-9000 out of 10000
-10000 out of 10000
 
 mean uncompressedSizeEstimator 457.9599320543565
 mean cheap0Estimator           231.22551958433255
