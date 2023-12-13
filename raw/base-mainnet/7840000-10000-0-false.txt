@@ -1,0 +1,71 @@
+Starting block: 7840000, min tx sample size: 10000, min tx size: 0, span batch mode: false
+1000 out of 10000
+2000 out of 10000
+3000 out of 10000
+4000 out of 10000
+5000 out of 10000
+6000 out of 10000
+7000 out of 10000
+8000 out of 10000
+9000 out of 10000
+10000 out of 10000
+
+mean uncompressedSizeEstimator 457.9599320543565
+mean cheap0Estimator           231.22551958433255
+mean cheapP5Estimator          231.0894254293506
+mean cheap1Estimator           230.96133681290073
+mean cheap2Estimator           230.72650768274428
+mean cheap3Estimator           230.51639740838868
+mean cheap4Estimator           230.32729816147008
+mean cheap5Estimator           230.15620836663925
+mean cheap6Estimator           230.00067218952188
+mean cheap7Estimator           229.85866089736626
+mean cheap8Estimator           229.72848387956196
+mean fastLZEstimator           247.4095723421263
+mean zlibBestEstimator         232.38399280575538
+mean zlibBestBatchEstimator    186.7964628297362
+
+scalar uncompressedSizeEstimator 0.4078882228665473
+scalar cheap0Estimator           0.8078540083531214
+scalar cheapP5Estimator          0.8083297731286464
+scalar cheap1Estimator           0.8087780639278945
+scalar cheap2Estimator           0.8096012231355177
+scalar cheap3Estimator           0.8103391556081058
+scalar cheap4Estimator           0.8110044459375513
+scalar cheap5Estimator           0.8116073172884788
+scalar cheap6Estimator           0.812156160464674
+scalar cheap7Estimator           0.8126579268341876
+scalar cheap8Estimator           0.8131184243033032
+scalar fastLZEstimator           0.7550090364791051
+scalar zlibBestEstimator         0.8038267204827453
+scalar zlibBestBatchEstimator    1
+
+mean-absolute-error uncompressedSizeEstimator 80.3922890692984
+mean-absolute-error cheap0Estimator           38.87499666690598
+mean-absolute-error cheapP5Estimator          39.560362970705185
+mean-absolute-error cheap1Estimator           40.572574367996324
+mean-absolute-error cheap2Estimator           43.283646107911224
+mean-absolute-error cheap3Estimator           46.53547835040107
+mean-absolute-error cheap4Estimator           49.967585944131066
+mean-absolute-error cheap5Estimator           53.29560930897332
+mean-absolute-error cheap6Estimator           56.446655297667135
+mean-absolute-error cheap7Estimator           59.443163160985414
+mean-absolute-error cheap8Estimator           62.30749091294173
+mean-absolute-error fastLZEstimator           28.287530192156737
+mean-absolute-error zlibBestEstimator         26.500132323230325
+mean-absolute-error zlibBestBatchEstimator    0
+
+root-mean-sq-error uncompressedSizeEstimator 209.03082110927747
+root-mean-sq-error cheap0Estimator           225.3772826773852
+root-mean-sq-error cheapP5Estimator          217.10660571327796
+root-mean-sq-error cheap1Estimator           209.91667167857867
+root-mean-sq-error cheap2Estimator           198.45013649827047
+root-mean-sq-error cheap3Estimator           190.35758541991868
+root-mean-sq-error cheap4Estimator           185.07094579569616
+root-mean-sq-error cheap5Estimator           182.07259079230016
+root-mean-sq-error cheap6Estimator           180.900849365499
+root-mean-sq-error cheap7Estimator           181.15565620368983
+root-mean-sq-error cheap8Estimator           182.5004881495122
+root-mean-sq-error fastLZEstimator           47.29864671462013
+root-mean-sq-error zlibBestEstimator         56.64214312258815
+root-mean-sq-error zlibBestBatchEstimator    0
