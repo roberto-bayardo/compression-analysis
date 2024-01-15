@@ -22,8 +22,8 @@ import (
 type estimator func([]byte) float64
 
 func main() {
-	blockNum := big.NewInt(7840000) // starting block
-	txsToFetch := 100000            // min # of transactions to include in our sample
+	blockNum := big.NewInt(9285000) // starting block; will iterate backwards from here
+	txsToFetch := 20000             // min # of transactions to include in our sample
 	minTxSize := 0                  // minimum transaction size to include in our sample whether to
 
 	// spanBatchMode will remove signatures from the tx rlp before compression, and use a fixed
@@ -48,7 +48,6 @@ func main() {
 	estimators := []estimator{
 		uncompressedSizeEstimator,
 		cheap0Estimator,
-		cheapP5Estimator,
 		cheap1Estimator,
 		cheap2Estimator,
 		cheap3Estimator,
@@ -57,6 +56,13 @@ func main() {
 		cheap6Estimator,
 		cheap7Estimator,
 		cheap8Estimator,
+		repeatedByte0Estimator,
+		repeatedByte1Estimator,
+		repeatedByte3Estimator,
+		repeatedOrZeroEstimator,
+		cheap2Estimator,
+		cheap3Estimator,
+		cheap4Estimator,
 		fastLZEstimator,
 		zlibBestEstimator,
 		zlibBestBatchEstimator, // final estimator value is always used as the "ground truth" against which others are measured
@@ -70,7 +76,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		//fmt.Println("Blocknum:", blockNum)
+		//fmt.Println("Blocknum:", blockNum, "Txs:", len(columns[0]))
 		for _, tx := range block.Transactions() {
 			if tx.Type() == types.DepositTxType {
 				continue
@@ -104,7 +110,7 @@ func main() {
 		if len(columns[0]) > txsToFetch {
 			break
 		}
-		blockNum.Add(blockNum, ONE)
+		blockNum.Sub(blockNum, ONE)
 	}
 
 	// compute normalizers to eliminate estimator bias reflecting what a chain operator does via scalar tuning
@@ -178,6 +184,53 @@ func prettyPrintStats(prefix string, estimators []estimator, stats []float64) {
 
 func getFuncName(f interface{}) string {
 	return runtime.FuncForPC(reflect.ValueOf(f).Pointer()).Name()[5:] // trim off "main." prefix
+}
+
+// only count bytes that are non-zero and non-repeated
+func repeatedOrZeroEstimator(tx []byte) float64 {
+	lastByte := byte(0)
+	count := 0
+	for _, b := range tx {
+		if b != lastByte && b != 0 {
+			count += 1
+		}
+		lastByte = b
+	}
+	return float64(count)
+}
+
+func repeatedByteEstimator(tx []byte, repeatedByteCost, changedByteCost int) float64 {
+	lastByte := byte(0)
+	count := 0
+	for _, b := range tx {
+		if b == lastByte {
+			count += repeatedByteCost
+		} else {
+			count += changedByteCost
+		}
+		lastByte = b
+	}
+	return float64(count) / float64(repeatedByteCost+changedByteCost)
+}
+
+func repeatedByte0Estimator(tx []byte) float64 {
+	return repeatedByteEstimator(tx, 0, 16)
+}
+
+func repeatedByte1Estimator(tx []byte) float64 {
+	return repeatedByteEstimator(tx, 1, 16)
+}
+
+func repeatedByte2Estimator(tx []byte) float64 {
+	return repeatedByteEstimator(tx, 2, 16)
+}
+
+func repeatedByte3Estimator(tx []byte) float64 {
+	return repeatedByteEstimator(tx, 3, 16)
+}
+
+func repeatedByte4Estimator(tx []byte) float64 {
+	return repeatedByteEstimator(tx, 4, 16)
 }
 
 func cheapEstimator(tx []byte, zeroByteCost int, nonZeroByteCost int) float64 {
