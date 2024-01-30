@@ -109,7 +109,7 @@ func main() {
 			log.Fatal(err)
 		}
 		if block == nil {
-			break
+			log.Fatal("not enough blocks")
 		}
 		p := block.ParentHash()
 		parentBlockHash = &p
@@ -179,8 +179,6 @@ func main() {
 			if uncompressedSizeFeature {
 				reg[j].SetVar(1, fmt.Sprintf("uncompressed bytes"))
 			}
-		}
-		for j := range estimators {
 			for i := range columns[j] {
 				truth := columns[len(scalars)-1][i]
 				estimator := columns[j][i]
