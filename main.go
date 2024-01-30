@@ -22,15 +22,14 @@ import (
 type estimator func([]byte) float64
 
 func main() {
-	blockNum := big.NewInt(9285000) // starting block; will iterate backwards from here
-	txsToFetch := 20000             // min # of transactions to include in our sample
+	blockNum := big.NewInt(9885000) // starting block; will iterate backwards from here
+	txsToFetch := 10000             // min # of transactions to include in our sample
 	minTxSize := 0                  // minimum transaction size to include in our sample whether to
 
-	// spanBatchMode will remove signatures from the tx rlp before compression, and use a fixed
-	// estimate of 68 bytes for the signature portion. This simulates the behavior of span batches
-	// which segregates the signatures from the more compressible parts of the tx during batch
-	// compression.
-	spanBatchMode := false
+	// spanBatchMode will remove signatures from the tx rlp before compression. This simulates the
+	// behavior of span batches which segregates the signatures from the more compressible parts of
+	// the tx during batch compression.
+	spanBatchMode := true
 
 	bootstrapTxs := 100 // min number of txs to use to bootstrap the batch compressor
 
@@ -89,7 +88,9 @@ func main() {
 				continue
 			}
 			if spanBatchMode {
-				b = b[:len(b)-68.] // trim the signature
+				// for span batch mode we trim the signature, and assume there is no estimation
+				// error on this component were we to just treat it as entirely uncompressible.
+				b = b[:len(b)-68.]
 			}
 			if bootstrapCount < bootstrapTxs {
 				zlibBestBatchEstimator(b)
@@ -98,9 +99,6 @@ func main() {
 			}
 			for j := range estimators {
 				estimate := estimators[j](b)
-				if spanBatchMode { // account for trimmed & uncompressible signature
-					estimate += 68
-				}
 				columns[j] = append(columns[j], estimate)
 			}
 			if len(columns[0])%1000 == 0 {
@@ -113,7 +111,8 @@ func main() {
 		blockNum.Sub(blockNum, ONE)
 	}
 
-	// compute normalizers to eliminate estimator bias reflecting what a chain operator does via scalar tuning
+	// compute normalizers to eliminate estimator bias reflecting what a chain operator does via
+	// scalar tuning
 	avgs := []float64{}
 	for j := range columns {
 		avg, err := stats.Mean(stats.Float64Data(columns[j]))
@@ -139,8 +138,14 @@ func main() {
 	for j := range estimators {
 		ae := make([]float64, len(columns[j]))
 		se := make([]float64, len(columns[j]))
+		scalar := scalars[j]
 		for i := range columns[j] {
-			e := columns[j][i]*scalars[j] - columns[len(scalars)-1][i]
+			// the estimate is the scaled output of the estimator
+			estimate := columns[j][i] * scalar
+			// output of the final estimator (which we assume to be the batched compression
+			// algorithm actually used by the batcher) is used as the "ground truth".
+			truth := columns[len(scalars)-1][i]
+			e := estimate - truth
 			ae[i] = math.Abs(e)
 			se[i] = math.Pow(e, 2)
 		}
@@ -258,8 +263,9 @@ func init() {
 	}
 }
 
-// zlibBestBatchEstimator simulates a zlib compressor at max compression that works on tx batches.
-// Should bootstrap it before use by calling it on several samples of representative data before using the results.
+// zlibBestBatchEstimator simulates a zlib compressor at max compression that works on (large) tx
+// batches.  Should bootstrap it before use by calling it on several samples of representative
+// data.
 func zlibBestBatchEstimator(tx []byte) float64 {
 	beginLen := b.Len()
 	batchWriter.Write(tx)
