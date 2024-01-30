@@ -32,6 +32,10 @@ func main() {
 	txsToFetch := 2000              // min # of transactions to include in our sample
 	minTxSize := 0                  // minimum transaction size to include in our sample whether to
 
+	// If this is true, then the functions will be derived on the oldest half of the transactions,
+	// and evaluated on the newer half.
+	separateTrainTest := true
+
 	// spanBatchMode will remove signatures from the tx rlp before compression. This simulates the
 	// behavior of span batches which segregates the signatures from the more compressible parts of
 	// the tx during batch compression.
@@ -58,6 +62,11 @@ func main() {
 			fmt.Println("Using regression with simple estimator as the only feature")
 		}
 	}
+	if separateTrainTest {
+		fmt.Println("Training over the older half of transactions, evaluating over the newer half.")
+	} else {
+		fmt.Println("Evaluating over the same set of transactions used to compute the regression.")
+	}
 
 	var client Client
 	var err error
@@ -79,9 +88,6 @@ func main() {
 		cheap3Estimator,
 		cheap4Estimator,
 		cheap5Estimator,
-		cheap6Estimator,
-		cheap7Estimator,
-		cheap8Estimator,
 		repeatedByte0Estimator,
 		repeatedByte1Estimator,
 		repeatedByte3Estimator,
@@ -176,7 +182,13 @@ func main() {
 			if uncompressedSizeFeature {
 				reg[j].SetVar(1, fmt.Sprintf("uncompressed bytes"))
 			}
-			for i := range columns[j] {
+			start := 0
+			end := len(columns[j])
+			if separateTrainTest {
+				// train only on the older transactions (those that come last)
+				start = end / 2
+			}
+			for i := start; i < end; i++ {
 				truth := columns[len(scalars)-1][i]
 				estimator := columns[j][i]
 				data := []float64{estimator}
@@ -200,7 +212,13 @@ func main() {
 		ae := make([]float64, len(columns[j]))
 		se := make([]float64, len(columns[j]))
 		scalar := scalars[j]
-		for i := range columns[j] {
+		start := 0
+		end := len(columns[j])
+		if separateTrainTest {
+			// evaluate the functions only over newer transactions (those that came first)
+			end = (end / 2) - 1
+		}
+		for i := start; i < end; i++ {
 			// output of the final estimator (which we assume to be the batched compression
 			// algorithm actually used by the batcher) is used as the "ground truth".
 			truth := columns[len(scalars)-1][i]
@@ -222,8 +240,8 @@ func main() {
 			ae[i] = math.Abs(e)
 			se[i] = math.Pow(e, 2)
 		}
-		absoluteErrors[j] = ae
-		squaredErrors[j] = se
+		absoluteErrors[j] = ae[start:end]
+		squaredErrors[j] = se[start:end]
 	}
 
 	// compute mean error metrics
