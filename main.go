@@ -69,6 +69,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer client.Close()
 
 	zlibBestBatchEstimator := newZlibBatchEstimator().write
 	estimators := []estimator{
@@ -457,6 +458,7 @@ func (w *zlibBatchEstimator) write(p []byte) float64 {
 type Client interface {
 	BlockByHash(ctx context.Context, hash common.Hash) (*types.Block, error)
 	BlockByNumber(ctx context.Context, number *big.Int) (*types.Block, error)
+	Close()
 }
 
 type LocalClient struct {
