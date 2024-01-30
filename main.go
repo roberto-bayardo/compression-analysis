@@ -44,8 +44,8 @@ func main() {
 
 	// remote node URL or local database location:
 	// clientLocation := "https://mainnet.base.org"
-	// clientLocation := "https://base-mainnet-dev.cbhq.net:8545"
-	clientLocation := "/data"
+	clientLocation := "https://base-mainnet-dev.cbhq.net:8545"
+	//clientLocation := "/data"
 
 	bootstrapTxs := 100 // min number of txs to use to bootstrap the batch compressor
 
@@ -71,7 +71,6 @@ func main() {
 	}
 	defer client.Close()
 
-	zlibBestBatchEstimator := newZlibBatchEstimator().write
 	estimators := []estimator{
 		uncompressedSizeEstimator,
 		cheap0Estimator,
@@ -87,9 +86,6 @@ func main() {
 		repeatedByte1Estimator,
 		repeatedByte3Estimator,
 		repeatedOrZeroEstimator,
-		cheap2Estimator,
-		cheap3Estimator,
-		cheap4Estimator,
 		fastLZEstimator,
 		zlibBestEstimator,
 		zlibBestBatchEstimator, // final estimator value is always used as the "ground truth" against which others are measured
@@ -395,6 +391,12 @@ func cheap8Estimator(tx []byte) float64 {
 type zlibBatchEstimator struct {
 	b [2]bytes.Buffer
 	w [2]*zlib.Writer
+}
+
+var batchEstimator = newZlibBatchEstimator().write
+
+func zlibBestBatchEstimator(tx []byte) float64 {
+	return batchEstimator(tx)
 }
 
 func newZlibBatchEstimator() *zlibBatchEstimator {
