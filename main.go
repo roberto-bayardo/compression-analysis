@@ -11,11 +11,16 @@ import (
 	"os"
 	"reflect"
 	"runtime"
+	"strings"
 	"text/tabwriter"
 
+	"github.com/ethereum/go-ethereum/cmd/utils"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
-	fastlz "github.com/fananchong/fastlz-go"
+	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/node"
 	"github.com/montanaflynn/stats"
 	"github.com/sajari/regression"
 )
@@ -37,6 +42,11 @@ func main() {
 	// when using regression, whether to also use the uncompressed tx size as a feature
 	uncompressedSizeFeature := true
 
+	// remote node URL or local database location:
+	// clientLocation := "https://mainnet.base.org"
+	// clientLocation := "https://base-mainnet-dev.cbhq.net:8545"
+	clientLocation := "/data"
+
 	bootstrapTxs := 100 // min number of txs to use to bootstrap the batch compressor
 
 	fmt.Printf("Starting block: %v, min tx sample size: %v, min tx size: %v, span batch mode: %v\n",
@@ -49,14 +59,18 @@ func main() {
 		}
 	}
 
-	ONE := big.NewInt(1)
-
-	//client, err := ethclient.Dial("https://mainnet.base.org")
-	client, err := ethclient.Dial("https://base-mainnet-dev.cbhq.net:8545")
+	var client Client
+	var err error
+	if strings.HasPrefix(clientLocation, "http://") || strings.HasPrefix(clientLocation, "https://") {
+		client, err = ethclient.Dial(clientLocation)
+	} else {
+		client, err = NewLocalClient(clientLocation)
+	}
 	if err != nil {
 		log.Fatal(err)
 	}
 
+	zlibBestBatchEstimator := newZlibBatchEstimator().write
 	estimators := []estimator{
 		uncompressedSizeEstimator,
 		cheap0Estimator,
@@ -83,11 +97,22 @@ func main() {
 
 	bootstrapCount := 0
 
+	var parentBlockHash *common.Hash
 	for {
-		block, err := client.BlockByNumber(context.Background(), blockNum)
+		var block *types.Block
+		if parentBlockHash == nil {
+			block, err = client.BlockByNumber(context.Background(), blockNum)
+		} else {
+			block, err = client.BlockByHash(context.Background(), *parentBlockHash)
+		}
 		if err != nil {
 			log.Fatal(err)
 		}
+		if block == nil {
+			break
+		}
+		p := block.ParentHash()
+		parentBlockHash = &p
 		//fmt.Println("Blocknum:", blockNum, "Txs:", len(columns[0]))
 		for _, tx := range block.Transactions() {
 			if tx.Type() == types.DepositTxType {
@@ -121,7 +146,6 @@ func main() {
 		if len(columns[0]) > txsToFetch {
 			break
 		}
-		blockNum.Sub(blockNum, ONE)
 	}
 
 	// compute normalizers to eliminate estimator bias reflecting what a chain operator does via
@@ -304,29 +328,6 @@ func cheapEstimator(tx []byte, zeroByteCost int, nonZeroByteCost int) float64 {
 	return float64(count) / float64(zeroByteCost+nonZeroByteCost)
 }
 
-var (
-	b           bytes.Buffer
-	batchWriter *zlib.Writer
-)
-
-func init() {
-	var err error
-	batchWriter, err = zlib.NewWriterLevel(&b, zlib.BestCompression)
-	if err != nil {
-		log.Fatal(err)
-	}
-}
-
-// zlibBestBatchEstimator simulates a zlib compressor at max compression that works on (large) tx
-// batches.  Should bootstrap it before use by calling it on several samples of representative
-// data.
-func zlibBestBatchEstimator(tx []byte) float64 {
-	beginLen := b.Len()
-	batchWriter.Write(tx)
-	batchWriter.Flush()
-	return float64(b.Len() - beginLen - 2) // flush writes 2 extra "sync" bytes so don't count those
-}
-
 func zlibBestEstimator(tx []byte) float64 {
 	var b bytes.Buffer
 	w, err := zlib.NewWriterLevel(&b, zlib.BestCompression)
@@ -340,10 +341,7 @@ func zlibBestEstimator(tx []byte) float64 {
 }
 
 func fastLZEstimator(tx []byte) float64 {
-	ol := int(float64(len(tx)) * 1.1)
-	out := make([]byte, ol)
-	sz := fastlz.Fastlz_compress(tx, len(tx), out)
-	return float64(sz)
+	return float64(flzCompressLen(tx))
 }
 
 func uncompressedSizeEstimator(tx []byte) float64 {
@@ -390,4 +388,196 @@ func cheap7Estimator(tx []byte) float64 {
 
 func cheap8Estimator(tx []byte) float64 {
 	return cheapEstimator(tx, 8, 16)
+}
+
+// zlibBatchEstimator simulates a zlib compressor at max compression that works on (large) tx
+// batches.  Should bootstrap it before use by calling it on several samples of representative
+// data.
+type zlibBatchEstimator struct {
+	b [2]bytes.Buffer
+	w [2]*zlib.Writer
+}
+
+func newZlibBatchEstimator() *zlibBatchEstimator {
+	b := &zlibBatchEstimator{}
+	var err error
+	for i := range b.w {
+		b.w[i], err = zlib.NewWriterLevel(&b.b[i], zlib.BestCompression)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	return b
+}
+
+func (w *zlibBatchEstimator) reset() {
+	for i := range w.w {
+		w.b[i].Reset()
+		w.w[i].Reset(&w.b[i])
+	}
+}
+
+func (w *zlibBatchEstimator) write(p []byte) float64 {
+	// targeting:
+	//	b[0] == 0-64kb
+	//	b[1] == 64kb-128kb
+	before := w.b[1].Len()
+	_, err := w.w[1].Write(p)
+	if err != nil {
+		log.Fatal(err)
+	}
+	err = w.w[1].Flush()
+	if err != nil {
+		log.Fatal(err)
+	}
+	after := w.b[1].Len()
+	// if b[1] > 64kb, write to b[0]
+	if w.b[1].Len() > 64*1024 {
+		_, err = w.w[0].Write(p)
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = w.w[0].Flush()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	// if b[1] > 128kb, rotate
+	if w.b[1].Len() > 128*1024 {
+		w.b[1].Reset()
+		w.w[1].Reset(&w.b[1])
+		tb := w.b[1]
+		tw := w.w[1]
+		w.b[1] = w.b[0]
+		w.w[1] = w.w[0]
+		w.b[0] = tb
+		w.w[0] = tw
+	}
+	return float64(after - before - 2) // flush writes 2 extra "sync" bytes so don't count those
+}
+
+type Client interface {
+	BlockByHash(ctx context.Context, hash common.Hash) (*types.Block, error)
+	BlockByNumber(ctx context.Context, number *big.Int) (*types.Block, error)
+}
+
+type LocalClient struct {
+	n  *node.Node
+	db ethdb.Database
+}
+
+func NewLocalClient(dataDir string) (Client, error) {
+	nodeCfg := node.DefaultConfig
+	nodeCfg.Name = "geth"
+	nodeCfg.DataDir = dataDir
+	n, err := node.New(&nodeCfg)
+	if err != nil {
+		return nil, err
+	}
+	handles := utils.MakeDatabaseHandles(0)
+	db, err := n.OpenDatabaseWithFreezer("chaindata", 512, handles, "", "", true)
+	if err != nil {
+		return nil, err
+	}
+	return &LocalClient{
+		n:  n,
+		db: db,
+	}, nil
+}
+
+func (c *LocalClient) Close() {
+	_ = c.db.Close()
+	_ = c.n.Close()
+}
+
+func (c *LocalClient) BlockByHash(ctx context.Context, hash common.Hash) (*types.Block, error) {
+	number := rawdb.ReadHeaderNumber(c.db, hash)
+	if number == nil {
+		return nil, nil
+	}
+	return rawdb.ReadBlock(c.db, hash, *number), nil
+}
+
+func (c *LocalClient) BlockByNumber(ctx context.Context, number *big.Int) (*types.Block, error) {
+	if number.Int64() < 0 {
+		return c.BlockByHash(ctx, rawdb.ReadHeadBlockHash(c.db))
+	}
+	hash := rawdb.ReadCanonicalHash(c.db, number.Uint64())
+	if bytes.Equal(hash.Bytes(), common.Hash{}.Bytes()) {
+		return nil, nil
+	}
+	return rawdb.ReadBlock(c.db, hash, number.Uint64()), nil
+}
+
+func flzCompressLen(ib []byte) uint32 {
+	n := uint32(0)
+	ht := make([]uint32, 8192)
+	u24 := func(i uint32) uint32 {
+		return uint32(ib[i]) | (uint32(ib[i+1]) << 8) | (uint32(ib[i+2]) << 16)
+	}
+	cmp := func(p uint32, q uint32, e uint32) uint32 {
+		l := uint32(0)
+		for e -= q; l < e; l++ {
+			if ib[p+l] != ib[q+l] {
+				e = 0
+			}
+		}
+		return l
+	}
+	literals := func(r uint32) {
+		n += 0x21 * (r / 0x20)
+		r %= 0x20
+		if r != 0 {
+			n += r + 1
+		}
+	}
+	match := func(l uint32) {
+		l--
+		n += 3 * (l / 262)
+		if l%262 >= 6 {
+			n += 3
+		} else {
+			n += 2
+		}
+	}
+	hash := func(v uint32) uint32 {
+		return ((2654435769 * v) >> 19) & 0x1fff
+	}
+	setNextHash := func(ip uint32) uint32 {
+		ht[hash(u24(ip))] = ip
+		return ip + 1
+	}
+	a := uint32(0)
+	ipLimit := uint32(len(ib)) - 13
+	for ip := a + 2; ip < ipLimit; {
+		r := uint32(0)
+		d := uint32(0)
+		for {
+			s := u24(ip)
+			h := hash(s)
+			r = ht[h]
+			ht[h] = ip
+			d = ip - r
+			if ip >= ipLimit {
+				break
+			}
+			ip++
+			if d <= 0x1fff && s == u24(r) {
+				break
+			}
+		}
+		if ip >= ipLimit {
+			break
+		}
+		ip--
+		if ip > a {
+			literals(ip - a)
+		}
+		l := cmp(r+3, ip+3, ipLimit+9)
+		match(l)
+		ip = setNextHash(setNextHash(ip + l))
+		a = ip
+	}
+	literals(uint32(len(ib)) - a)
+	return n
 }
