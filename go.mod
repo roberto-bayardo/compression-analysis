@@ -6,6 +6,7 @@ require (
 	github.com/ethereum/go-ethereum v1.13.5
 	github.com/fananchong/fastlz-go v0.0.0-20180531021902-36cfd577eb6d
 	github.com/montanaflynn/stats v0.7.1
+	github.com/sajari/regression v1.0.1
 )
 
 require (
@@ -35,6 +36,7 @@ require (
 	golang.org/x/sync v0.3.0 // indirect
 	golang.org/x/sys v0.13.0 // indirect
 	golang.org/x/tools v0.13.0 // indirect
+	gonum.org/v1/gonum v0.14.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	rsc.io/tmplfunc v0.0.3 // indirect
 )

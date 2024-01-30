@@ -17,13 +17,14 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	fastlz "github.com/fananchong/fastlz-go"
 	"github.com/montanaflynn/stats"
+	"github.com/sajari/regression"
 )
 
 type estimator func([]byte) float64
 
 func main() {
 	blockNum := big.NewInt(9885000) // starting block; will iterate backwards from here
-	txsToFetch := 10000             // min # of transactions to include in our sample
+	txsToFetch := 2000              // min # of transactions to include in our sample
 	minTxSize := 0                  // minimum transaction size to include in our sample whether to
 
 	// spanBatchMode will remove signatures from the tx rlp before compression. This simulates the
@@ -31,10 +32,22 @@ func main() {
 	// the tx during batch compression.
 	spanBatchMode := true
 
+	// whether to build a regression model instead of simple scalar-tuned estimator
+	useRegression := true
+	// when using regression, whether to also use the uncompressed tx size as a feature
+	uncompressedSizeFeature := true
+
 	bootstrapTxs := 100 // min number of txs to use to bootstrap the batch compressor
 
 	fmt.Printf("Starting block: %v, min tx sample size: %v, min tx size: %v, span batch mode: %v\n",
 		blockNum, txsToFetch, minTxSize, spanBatchMode)
+	if useRegression {
+		if uncompressedSizeFeature {
+			fmt.Println("Using regression with estimator + uncompress-tx-size as features")
+		} else {
+			fmt.Println("Using regression with simple estimator as the only feature")
+		}
+	}
 
 	ONE := big.NewInt(1)
 
@@ -125,11 +138,40 @@ func main() {
 	prettyPrintStats("mean", estimators, avgs)
 
 	scalars := make([]float64, len(avgs))
-	for j := range columns {
-		scalars[j] = avgs[len(avgs)-1] / avgs[j]
+	if !useRegression {
+		for j := range columns {
+			scalars[j] = avgs[len(avgs)-1] / avgs[j]
+		}
+		fmt.Println()
+		prettyPrintStats("scalar", estimators, scalars)
 	}
-	fmt.Println()
-	prettyPrintStats("scalar", estimators, scalars)
+
+	// Create regressors for each estimator
+	reg := make([]regression.Regression, len(estimators))
+	if useRegression {
+		for j := range estimators {
+			reg[j].SetObserved("bytes after batch compression")
+			reg[j].SetVar(0, getFuncName(estimators[j]))
+			if uncompressedSizeFeature {
+				reg[j].SetVar(1, fmt.Sprintf("uncompressed bytes"))
+			}
+		}
+		for j := range estimators {
+			for i := range columns[j] {
+				truth := columns[len(scalars)-1][i]
+				estimator := columns[j][i]
+				data := []float64{estimator}
+				if uncompressedSizeFeature {
+					data = append(data, columns[0][i]) // assumes the "uncompressed estimator" is always first
+				}
+				reg[j].Train(regression.DataPoint(truth, data))
+			}
+			reg[j].Run()
+			fmt.Printf("Regression %v:\n%v\n", getFuncName(estimators[j]), reg[j].Formula)
+			fmt.Println("R^2:", reg[j].R2)
+			//fmt.Printf("Regression %d        :\n%s\n", j, reg[j])
+		}
+	}
 
 	// compute per-tx error values
 	absoluteErrors := make([][]float64, len(estimators))
@@ -140,11 +182,23 @@ func main() {
 		se := make([]float64, len(columns[j]))
 		scalar := scalars[j]
 		for i := range columns[j] {
-			// the estimate is the scaled output of the estimator
-			estimate := columns[j][i] * scalar
 			// output of the final estimator (which we assume to be the batched compression
 			// algorithm actually used by the batcher) is used as the "ground truth".
 			truth := columns[len(scalars)-1][i]
+			var estimate float64
+			if !useRegression {
+				// the estimate is the scaled output of the estimator
+				estimate = columns[j][i] * scalar
+			} else {
+				data := []float64{columns[j][i]}
+				if uncompressedSizeFeature {
+					data = append(data, columns[0][i]) // assumes the "uncompressed estimator" is always first
+				}
+				estimate, err = reg[j].Predict(data)
+				if err != nil {
+					panic(err)
+				}
+			}
 			e := estimate - truth
 			ae[i] = math.Abs(e)
 			se[i] = math.Pow(e, 2)
