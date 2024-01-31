@@ -18,7 +18,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/montanaflynn/stats"
-	"github.com/sajari/regression"
 )
 
 // type estimator takes as input a serialized transaction and outputs a score indended to be
@@ -31,7 +30,7 @@ type model func(data []float64) (float64, error)
 
 func main() {
 	blockNum := big.NewInt(9885000) // starting block; will iterate backwards from here
-	txsToFetch := 50000             // min # of transactions to include in our sample
+	txsToFetch := 20000             // min # of transactions to include in our sample
 	minTxSize := 0                  // minimum transaction size to include in our sample whether to
 
 	// If this is true, then the functions will be derived on the oldest half of the transactions,
@@ -137,6 +136,7 @@ func main() {
 			}
 		}
 		if len(columns[0]) > txsToFetch {
+			fmt.Println("Reached tx limit. Txs:", len(columns[0]), "Last block fetched:", block.Number())
 			break
 		}
 	}
@@ -253,29 +253,108 @@ func evaluate(estimators []estimator, columns [][]float64, models []model) (mae 
 	return mae, rmse
 }
 
+type regression struct {
+	coefficients []float64
+}
+
+func (r *regression) Learn(rows [][]float64, y []float64) error {
+	// performs batch gradient descent with momentum
+	fmt.Println("\nLearning....")
+	alpha := .00001 // alpha higher than this tends to result in divergence for this data
+	momentum := .99 // very high momentum seems to work best for this data
+
+again:
+	r.coefficients = make([]float64, len(rows[0])+1)
+	b, _ := r.gradient(rows, y)
+	lastMse := 0.
+
+	for i := 0; i < 1000000; i++ {
+		for j := range b {
+			r.coefficients[j] = r.coefficients[j] - (b[j] * alpha)
+		}
+		g, mse := r.gradient(rows, y)
+		if math.IsNaN(mse) {
+			alpha /= 2
+			fmt.Println("Model diverging, cutting alpha:", alpha)
+			goto again
+		}
+		// check for convergence
+		if math.Abs(mse-lastMse) < .000001 {
+			fmt.Println("Converged at iteration:", i)
+			break
+		}
+		lastMse = mse
+		for j := range b {
+			b[j] = momentum*b[j] + g[j]
+		}
+	}
+
+	return nil
+}
+
+// returns the mean gradient of the model for the given dataset
+func (r *regression) gradient(rows [][]float64, y []float64) ([]float64, float64) {
+	gradient := make([]float64, len(rows[0])+1)
+	var mse float64
+	for i := range rows {
+		row := rows[i]
+		p := r.Predict(row)
+		e := p - y[i]
+		mse += e * e
+		gradient[0] += e
+		for j := range row {
+			gradient[j+1] += e * row[j]
+		}
+	}
+	for j := range gradient {
+		gradient[j] /= float64(len(rows))
+	}
+	return gradient, mse / float64(len(rows))
+}
+
+func (r regression) Predict(row []float64) float64 {
+	sum := r.coefficients[0]
+	for i := range row {
+		sum += r.coefficients[i+1] * row[i]
+	}
+	return sum
+}
+
+func (r regression) String() string {
+	str := fmt.Sprintf("%.4f", r.coefficients[0])
+	for i := 1; i < len(r.coefficients); i++ {
+		str += fmt.Sprintf(" + %.4f*x_%d", r.coefficients[i], i-1)
+	}
+	return str
+}
+
 func doRegression(estimators []estimator, columns [][]float64, uncompressedSizeFeature bool) []model {
 	// create a linear regression model for each simple estimator
 	models := make([]model, len(estimators))
-	reg := make([]regression.Regression, len(estimators))
+	truth := columns[len(columns)-1]
 	for j := range estimators {
-		reg[j].SetObserved("bytes after batch compression")
-		reg[j].SetVar(0, getFuncName(estimators[j]))
-		if uncompressedSizeFeature {
-			reg[j].SetVar(1, fmt.Sprintf("uncompressed bytes"))
-		}
+		var featureRows [][]float64
 		for i := range columns[j] {
-			truth := columns[len(estimators)-1][i]
 			estimator := columns[j][i]
 			data := []float64{estimator}
 			if uncompressedSizeFeature {
 				data = append(data, columns[0][i]) // assumes the "uncompressed estimator" is always first
 			}
-			reg[j].Train(regression.DataPoint(truth, data))
+			featureRows = append(featureRows, data)
 		}
-		reg[j].Run()
-		fmt.Printf("\nRegression %v:\n%v\n", getFuncName(estimators[j]), reg[j].Formula)
-		fmt.Println("R^2:", reg[j].R2)
-		models[j] = reg[j].Predict
+		reg := regression{}
+		err := reg.Learn(featureRows, truth)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("\nRegression %v: %v\n", getFuncName(estimators[j]), reg)
+		models[j] = func(row []float64) (float64, error) {
+			if !uncompressedSizeFeature {
+				row = row[:1]
+			}
+			r := reg.Predict(row)
+			return r, nil
+		}
 	}
 	return models
 }

@@ -5,7 +5,6 @@ go 1.21
 require (
 	github.com/ethereum/go-ethereum v1.13.5
 	github.com/montanaflynn/stats v0.7.1
-	github.com/sajari/regression v1.0.1
 )
 
 require (
@@ -95,7 +94,6 @@ require (
 	golang.org/x/text v0.13.0 // indirect
 	golang.org/x/time v0.3.0 // indirect
 	golang.org/x/tools v0.13.0 // indirect
-	gonum.org/v1/gonum v0.14.0 // indirect
 	google.golang.org/protobuf v1.27.1 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
