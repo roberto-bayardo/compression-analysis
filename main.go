@@ -14,18 +14,20 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
-	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/node"
 	"github.com/montanaflynn/stats"
 	"github.com/sajari/regression"
 )
 
+// type estimator takes as input a serialized transaction and outputs a score indended to be
+// predictive of what the batch-compressed size of that transaction might be.
 type estimator func([]byte) float64
+
+// type model takes as input a feature vector for a serialized transaction and outputs a prediction
+// for the size of that transaction after batch compression.
+type model func(data []float64) (float64, error)
 
 func main() {
 	blockNum := big.NewInt(9885000) // starting block; will iterate backwards from here
@@ -34,7 +36,7 @@ func main() {
 
 	// If this is true, then the functions will be derived on the oldest half of the transactions,
 	// and evaluated on the newer half.
-	separateTrainTest := true
+	separateTrainTest := false
 
 	// spanBatchMode will remove signatures from the tx rlp before compression. This simulates the
 	// behavior of span batches which segregates the signatures from the more compressible parts of
@@ -81,7 +83,7 @@ func main() {
 	defer client.Close()
 
 	estimators := []estimator{
-		uncompressedSizeEstimator,
+		uncompressedSizeEstimator, // first estimator should always return the length of the input
 		cheap0Estimator,
 		cheap1Estimator,
 		cheap2Estimator,
@@ -90,7 +92,7 @@ func main() {
 		cheap5Estimator,
 		repeatedByte0Estimator,
 		repeatedByte1Estimator,
-		repeatedByte3Estimator,
+		repeatedByte2Estimator,
 		repeatedOrZeroEstimator,
 		fastLZEstimator,
 		zlibBestEstimator,
@@ -151,31 +153,30 @@ func main() {
 		}
 	}
 
-	// compute normalizers to eliminate estimator bias reflecting what a chain operator does via
-	// scalar tuning
-	avgs := []float64{}
-	for j := range columns {
-		avg, err := stats.Mean(stats.Float64Data(columns[j]))
-		if err != nil {
-			log.Fatal(err)
-		}
-		avgs = append(avgs, avg)
-	}
+	models := make([]model, len(estimators))
+
+	avgs := computeMeans(columns)
 	fmt.Println()
 	prettyPrintStats("mean", estimators, avgs)
 
 	scalars := make([]float64, len(avgs))
 	if !useRegression {
-		for j := range columns {
-			scalars[j] = avgs[len(avgs)-1] / avgs[j]
+		// compute normalizers to eliminate estimator bias reflecting what a chain operator does via
+		// scalar tuning, and use the normalized estimator as our "prediction"
+		for j := range estimators {
+			scalar := avgs[len(avgs)-1] / avgs[j]
+			scalars[j] = scalar
+			models[j] = func(data []float64) (float64, error) {
+				return data[0] * scalar, nil
+			}
 		}
 		fmt.Println()
 		prettyPrintStats("scalar", estimators, scalars)
 	}
 
-	// Create regressors for each estimator
-	reg := make([]regression.Regression, len(estimators))
 	if useRegression {
+		// create a linear regression model for each simple estimator
+		reg := make([]regression.Regression, len(estimators))
 		for j := range estimators {
 			reg[j].SetObserved("bytes after batch compression")
 			reg[j].SetVar(0, getFuncName(estimators[j]))
@@ -200,10 +201,24 @@ func main() {
 			reg[j].Run()
 			fmt.Printf("Regression %v:\n%v\n", getFuncName(estimators[j]), reg[j].Formula)
 			fmt.Println("R^2:", reg[j].R2)
-			//fmt.Printf("Regression %d        :\n%s\n", j, reg[j])
+			models[j] = reg[j].Predict
 		}
 	}
 
+	start := 0
+	end := len(columns[0])
+	if separateTrainTest {
+		// evaluate the functions only over newer transactions (those that came first)
+		end = (end / 2) - 1
+	}
+	testColumns := make([][]float64, len(estimators))
+	for j := range testColumns {
+		testColumns[j] = columns[j][start:end]
+	}
+	evaluate(estimators, testColumns, models)
+}
+
+func evaluate(estimators []estimator, columns [][]float64, models []model) {
 	// compute per-tx error values
 	absoluteErrors := make([][]float64, len(estimators))
 	squaredErrors := make([][]float64, len(estimators))
@@ -211,37 +226,23 @@ func main() {
 	for j := range estimators {
 		ae := make([]float64, len(columns[j]))
 		se := make([]float64, len(columns[j]))
-		scalar := scalars[j]
-		start := 0
-		end := len(columns[j])
-		if separateTrainTest {
-			// evaluate the functions only over newer transactions (those that came first)
-			end = (end / 2) - 1
-		}
-		for i := start; i < end; i++ {
+		for i := range columns[j] {
 			// output of the final estimator (which we assume to be the batched compression
 			// algorithm actually used by the batcher) is used as the "ground truth".
-			truth := columns[len(scalars)-1][i]
+			truth := columns[len(estimators)-1][i]
 			var estimate float64
-			if !useRegression {
-				// the estimate is the scaled output of the estimator
-				estimate = columns[j][i] * scalar
-			} else {
-				data := []float64{columns[j][i]}
-				if uncompressedSizeFeature {
-					data = append(data, columns[0][i]) // assumes the "uncompressed estimator" is always first
-				}
-				estimate, err = reg[j].Predict(data)
-				if err != nil {
-					panic(err)
-				}
+			data := []float64{columns[j][i], columns[0][i]}
+			var err error
+			estimate, err = models[j](data)
+			if err != nil {
+				panic(err)
 			}
 			e := estimate - truth
 			ae[i] = math.Abs(e)
 			se[i] = math.Pow(e, 2)
 		}
-		absoluteErrors[j] = ae[start:end]
-		squaredErrors[j] = se[start:end]
+		absoluteErrors[j] = ae
+		squaredErrors[j] = se
 	}
 
 	// compute mean error metrics
@@ -266,7 +267,18 @@ func main() {
 	}
 	fmt.Println()
 	prettyPrintStats("root-mean-sq-error", estimators, rmses)
+}
 
+func computeMeans(columns [][]float64) []float64 {
+	avgs := []float64{}
+	for j := range columns {
+		avg, err := stats.Mean(stats.Float64Data(columns[j]))
+		if err != nil {
+			log.Fatal(err)
+		}
+		avgs = append(avgs, avg)
+	}
+	return avgs
 }
 
 func prettyPrintStats(prefix string, estimators []estimator, stats []float64) {
@@ -357,6 +369,7 @@ func fastLZEstimator(tx []byte) float64 {
 	return float64(flzCompressLen(tx))
 }
 
+// uncompressedSizeEstimator just returns the length of the input
 func uncompressedSizeEstimator(tx []byte) float64 {
 	return float64(len(tx))
 }
@@ -473,60 +486,6 @@ func (w *zlibBatchEstimator) write(p []byte) float64 {
 		w.w[0] = tw
 	}
 	return float64(after - before - 2) // flush writes 2 extra "sync" bytes so don't count those
-}
-
-type Client interface {
-	BlockByHash(ctx context.Context, hash common.Hash) (*types.Block, error)
-	BlockByNumber(ctx context.Context, number *big.Int) (*types.Block, error)
-	Close()
-}
-
-type LocalClient struct {
-	n  *node.Node
-	db ethdb.Database
-}
-
-func NewLocalClient(dataDir string) (Client, error) {
-	nodeCfg := node.DefaultConfig
-	nodeCfg.Name = "geth"
-	nodeCfg.DataDir = dataDir
-	n, err := node.New(&nodeCfg)
-	if err != nil {
-		return nil, err
-	}
-	handles := utils.MakeDatabaseHandles(0)
-	db, err := n.OpenDatabaseWithFreezer("chaindata", 512, handles, "", "", true)
-	if err != nil {
-		return nil, err
-	}
-	return &LocalClient{
-		n:  n,
-		db: db,
-	}, nil
-}
-
-func (c *LocalClient) Close() {
-	_ = c.db.Close()
-	_ = c.n.Close()
-}
-
-func (c *LocalClient) BlockByHash(ctx context.Context, hash common.Hash) (*types.Block, error) {
-	number := rawdb.ReadHeaderNumber(c.db, hash)
-	if number == nil {
-		return nil, nil
-	}
-	return rawdb.ReadBlock(c.db, hash, *number), nil
-}
-
-func (c *LocalClient) BlockByNumber(ctx context.Context, number *big.Int) (*types.Block, error) {
-	if number.Int64() < 0 {
-		return c.BlockByHash(ctx, rawdb.ReadHeadBlockHash(c.db))
-	}
-	hash := rawdb.ReadCanonicalHash(c.db, number.Uint64())
-	if bytes.Equal(hash.Bytes(), common.Hash{}.Bytes()) {
-		return nil, nil
-	}
-	return rawdb.ReadBlock(c.db, hash, number.Uint64()), nil
 }
 
 func flzCompressLen(ib []byte) uint32 {
