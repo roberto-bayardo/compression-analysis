@@ -31,22 +31,17 @@ type model func(data []float64) (float64, error)
 
 func main() {
 	blockNum := big.NewInt(9885000) // starting block; will iterate backwards from here
-	txsToFetch := 2000              // min # of transactions to include in our sample
+	txsToFetch := 50000             // min # of transactions to include in our sample
 	minTxSize := 0                  // minimum transaction size to include in our sample whether to
 
 	// If this is true, then the functions will be derived on the oldest half of the transactions,
 	// and evaluated on the newer half.
-	separateTrainTest := false
+	separateTrainTest := true
 
 	// spanBatchMode will remove signatures from the tx rlp before compression. This simulates the
 	// behavior of span batches which segregates the signatures from the more compressible parts of
 	// the tx during batch compression.
 	spanBatchMode := true
-
-	// whether to build a regression model instead of simple scalar-tuned estimator
-	useRegression := true
-	// when using regression, whether to also use the uncompressed tx size as a feature
-	uncompressedSizeFeature := true
 
 	// remote node URL or local database location:
 	// clientLocation := "https://mainnet.base.org"
@@ -57,13 +52,6 @@ func main() {
 
 	fmt.Printf("Starting block: %v, min tx sample size: %v, min tx size: %v, span batch mode: %v\n",
 		blockNum, txsToFetch, minTxSize, spanBatchMode)
-	if useRegression {
-		if uncompressedSizeFeature {
-			fmt.Println("Using regression with estimator + uncompress-tx-size as features")
-		} else {
-			fmt.Println("Using regression with simple estimator as the only feature")
-		}
-	}
 	if separateTrainTest {
 		fmt.Println("Training over the older half of transactions, evaluating over the newer half.")
 	} else {
@@ -153,60 +141,42 @@ func main() {
 		}
 	}
 
-	models := make([]model, len(estimators))
-
+	// print summary statistics of entire dataset
 	avgs := computeMeans(columns)
 	fmt.Println()
 	prettyPrintStats("mean", estimators, avgs)
 
-	scalars := make([]float64, len(avgs))
-	if !useRegression {
-		// compute normalizers to eliminate estimator bias reflecting what a chain operator does via
-		// scalar tuning, and use the normalized estimator as our "prediction"
-		for j := range estimators {
-			scalar := avgs[len(avgs)-1] / avgs[j]
-			scalars[j] = scalar
-			models[j] = func(data []float64) (float64, error) {
-				return data[0] * scalar, nil
-			}
-		}
-		fmt.Println()
-		prettyPrintStats("scalar", estimators, scalars)
-	}
-
-	if useRegression {
-		// create a linear regression model for each simple estimator
-		reg := make([]regression.Regression, len(estimators))
-		for j := range estimators {
-			reg[j].SetObserved("bytes after batch compression")
-			reg[j].SetVar(0, getFuncName(estimators[j]))
-			if uncompressedSizeFeature {
-				reg[j].SetVar(1, fmt.Sprintf("uncompressed bytes"))
-			}
-			start := 0
-			end := len(columns[j])
-			if separateTrainTest {
-				// train only on the older transactions (those that come last)
-				start = end / 2
-			}
-			for i := start; i < end; i++ {
-				truth := columns[len(scalars)-1][i]
-				estimator := columns[j][i]
-				data := []float64{estimator}
-				if uncompressedSizeFeature {
-					data = append(data, columns[0][i]) // assumes the "uncompressed estimator" is always first
-				}
-				reg[j].Train(regression.DataPoint(truth, data))
-			}
-			reg[j].Run()
-			fmt.Printf("Regression %v:\n%v\n", getFuncName(estimators[j]), reg[j].Formula)
-			fmt.Println("R^2:", reg[j].R2)
-			models[j] = reg[j].Predict
-		}
-	}
-
 	start := 0
 	end := len(columns[0])
+	if separateTrainTest {
+		// train only on the older transactions (those that come last)
+		start = end / 2
+	}
+	trainColumns := make([][]float64, len(estimators))
+	for j := range trainColumns {
+		trainColumns[j] = columns[j][start:end]
+	}
+
+	avgs = computeMeans(trainColumns)
+	scalarModels := make([]model, len(estimators))
+	scalars := make([]float64, len(avgs))
+	// compute normalizers to eliminate estimator bias reflecting what a chain operator does via
+	// scalar tuning, and use the normalized estimator as our "prediction"
+	for j := range estimators {
+		scalar := avgs[len(avgs)-1] / avgs[j]
+		scalars[j] = scalar
+		scalarModels[j] = func(data []float64) (float64, error) {
+			return data[0] * scalar, nil
+		}
+	}
+	fmt.Println()
+	prettyPrintStats("scalar", estimators, scalars)
+
+	singleFeatureRegressionModels := doRegression(estimators, trainColumns, false)
+	twoFeatureRegressionModels := doRegression(estimators, trainColumns, true)
+
+	start = 0
+	end = len(columns[0])
 	if separateTrainTest {
 		// evaluate the functions only over newer transactions (those that came first)
 		end = (end / 2) - 1
@@ -215,10 +185,28 @@ func main() {
 	for j := range testColumns {
 		testColumns[j] = columns[j][start:end]
 	}
-	evaluate(estimators, testColumns, models)
+
+	if separateTrainTest {
+		// print out the training set performance stats separately from the test set
+		scalarMae, scalarRmse := evaluate(estimators, trainColumns, scalarModels)
+		regMae, regRmse := evaluate(estimators, trainColumns, singleFeatureRegressionModels)
+		twoMae, twoRmse := evaluate(estimators, trainColumns, twoFeatureRegressionModels)
+		fmt.Println("\n========= TRAINING SET STATS: SCALAR MODEL, 1D REGRESSION, 2D REGRESSION ==========\n")
+		prettyPrintStats("mean-absolute-error", estimators, scalarMae, regMae, twoMae)
+		fmt.Println()
+		prettyPrintStats("root-mean-sq-error ", estimators, scalarRmse, regRmse, twoRmse)
+	}
+
+	scalarMae, scalarRmse := evaluate(estimators, testColumns, scalarModels)
+	regMae, regRmse := evaluate(estimators, testColumns, singleFeatureRegressionModels)
+	twoMae, twoRmse := evaluate(estimators, testColumns, twoFeatureRegressionModels)
+	fmt.Println("\n========= SCALAR MODEL, 1D REGRESSION, 2D REGRESSION ==========\n")
+	prettyPrintStats("mean-absolute-error", estimators, scalarMae, regMae, twoMae)
+	fmt.Println()
+	prettyPrintStats("root-mean-sq-error ", estimators, scalarRmse, regRmse, twoRmse)
 }
 
-func evaluate(estimators []estimator, columns [][]float64, models []model) {
+func evaluate(estimators []estimator, columns [][]float64, models []model) (mae []float64, rmse []float64) {
 	// compute per-tx error values
 	absoluteErrors := make([][]float64, len(estimators))
 	squaredErrors := make([][]float64, len(estimators))
@@ -246,27 +234,50 @@ func evaluate(estimators []estimator, columns [][]float64, models []model) {
 	}
 
 	// compute mean error metrics
-	var mass []float64
+	mae = []float64{}
 	for j := range estimators {
 		mas, err := stats.Mean(stats.Float64Data(absoluteErrors[j]))
 		if err != nil {
 			log.Fatal(err)
 		}
-		mass = append(mass, mas)
+		mae = append(mae, mas)
 	}
-	fmt.Println()
-	prettyPrintStats("mean-absolute-error", estimators, mass)
-
-	var rmses []float64
+	rmse = []float64{}
 	for j := range estimators {
 		mse, err := stats.Mean(stats.Float64Data(squaredErrors[j]))
 		if err != nil {
 			log.Fatal(err)
 		}
-		rmses = append(rmses, math.Sqrt(mse))
+		rmse = append(rmse, math.Sqrt(mse))
 	}
-	fmt.Println()
-	prettyPrintStats("root-mean-sq-error", estimators, rmses)
+	return mae, rmse
+}
+
+func doRegression(estimators []estimator, columns [][]float64, uncompressedSizeFeature bool) []model {
+	// create a linear regression model for each simple estimator
+	models := make([]model, len(estimators))
+	reg := make([]regression.Regression, len(estimators))
+	for j := range estimators {
+		reg[j].SetObserved("bytes after batch compression")
+		reg[j].SetVar(0, getFuncName(estimators[j]))
+		if uncompressedSizeFeature {
+			reg[j].SetVar(1, fmt.Sprintf("uncompressed bytes"))
+		}
+		for i := range columns[j] {
+			truth := columns[len(estimators)-1][i]
+			estimator := columns[j][i]
+			data := []float64{estimator}
+			if uncompressedSizeFeature {
+				data = append(data, columns[0][i]) // assumes the "uncompressed estimator" is always first
+			}
+			reg[j].Train(regression.DataPoint(truth, data))
+		}
+		reg[j].Run()
+		fmt.Printf("\nRegression %v:\n%v\n", getFuncName(estimators[j]), reg[j].Formula)
+		fmt.Println("R^2:", reg[j].R2)
+		models[j] = reg[j].Predict
+	}
+	return models
 }
 
 func computeMeans(columns [][]float64) []float64 {
@@ -281,11 +292,22 @@ func computeMeans(columns [][]float64) []float64 {
 	return avgs
 }
 
-func prettyPrintStats(prefix string, estimators []estimator, stats []float64) {
-	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
+func prettyPrintStats(prefix string, estimators []estimator, stats ...[]float64) {
+	w := tabwriter.NewWriter(os.Stdout, 10, 1, 1, ' ', tabwriter.AlignRight)
 
+	formatString := "%v\t%v\t"
+	for i := 0; i < len(stats); i++ {
+		formatString += "%.2f\t"
+	}
+	formatString += "\n"
 	for j := range estimators {
-		fmt.Fprintf(w, "%v\t%v\t%v\n", prefix, getFuncName(estimators[j]), stats[j])
+		row := make([]any, len(stats)+2)
+		row[0] = prefix
+		row[1] = getFuncName(estimators[j])
+		for i := range stats {
+			row[i+2] = stats[i][j]
+		}
+		fmt.Fprintf(w, formatString, row...)
 	}
 	w.Flush()
 }
