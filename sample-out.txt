@@ -1,0 +1,126 @@
+Starting block: 9885000, min tx sample size: 2000000, min tx size: 0, span batch mode: true
+Training over the older half of transactions, evaluating over the newer half.
+Reached tx limit. Txs: 2000011 Last block fetched: 9653936
+
+      mean uncompressedSizeEstimator    435.29
+      mean           cheap0Estimator    194.83
+      mean           cheap1Estimator    197.52
+      mean           cheap2Estimator    199.90
+      mean           cheap3Estimator    202.04
+      mean           cheap4Estimator    203.96
+      mean           cheap5Estimator    205.69
+      mean    repeatedByte0Estimator    199.05
+      mean    repeatedByte1Estimator    201.24
+      mean    repeatedByte2Estimator    203.19
+      mean   repeatedOrZeroEstimator    189.51
+      mean           fastLZEstimator    186.33
+      mean         zlibBestEstimator    167.26
+      mean    zlibBestBatchEstimator    105.17
+
+    scalar uncompressedSizeEstimator      0.23
+    scalar           cheap0Estimator      0.51
+    scalar           cheap1Estimator      0.50
+    scalar           cheap2Estimator      0.49
+    scalar           cheap3Estimator      0.49
+    scalar           cheap4Estimator      0.49
+    scalar           cheap5Estimator      0.48
+    scalar    repeatedByte0Estimator      0.50
+    scalar    repeatedByte1Estimator      0.49
+    scalar    repeatedByte2Estimator      0.49
+    scalar   repeatedOrZeroEstimator      0.52
+    scalar           fastLZEstimator      0.57
+    scalar         zlibBestEstimator      0.63
+    scalar    zlibBestBatchEstimator      1.00
+
+Regression uncompressedSizeEstimator: 56.3043 + 0.1105*x_0
+Regression cheap0Estimator: 49.2544 + 0.2776*x_0
+Regression cheap1Estimator: 49.9419 + 0.2709*x_0
+Regression cheap2Estimator: 50.6035 + 0.2650*x_0
+Regression cheap3Estimator: 51.2273 + 0.2596*x_0
+Regression cheap4Estimator: 51.8135 + 0.2548*x_0
+Regression cheap5Estimator: 52.3591 + 0.2504*x_0
+Regression repeatedByte0Estimator: 48.9453 + 0.2733*x_0
+Regression repeatedByte1Estimator: 49.6902 + 0.2672*x_0
+Regression repeatedByte2Estimator: 50.3950 + 0.2618*x_0
+Regression repeatedOrZeroEstimator: 49.3482 + 0.2848*x_0
+Regression fastLZEstimator: -38.4520 + 0.7657*x_0
+Regression zlibBestEstimator: -58.7218 + 0.9758*x_0
+Regression zlibBestBatchEstimator: 0.0001 + 1.0000*x_0
+Regression uncompressedSizeEstimator: 56.2560 + 0.0552*x_0 + 0.0552*x_1
+Regression cheap0Estimator: 47.2188 + 0.6392*x_0 + -0.1591*x_1
+Regression cheap1Estimator: 47.2191 + 0.7244*x_0 + -0.2018*x_1
+Regression cheap2Estimator: 47.2208 + 0.8218*x_0 + -0.2505*x_1
+Regression cheap3Estimator: 47.2179 + 0.9342*x_0 + -0.3066*x_1
+Regression cheap4Estimator: 47.2200 + 1.0653*x_0 + -0.3722*x_1
+Regression cheap5Estimator: 47.2178 + 1.2203*x_0 + -0.4497*x_1
+Regression repeatedByte0Estimator: 46.1643 + 0.7143*x_0 + -0.1976*x_1
+Regression repeatedByte1Estimator: 46.1657 + 0.8095*x_0 + -0.2452*x_1
+Regression repeatedByte2Estimator: 46.1654 + 0.9183*x_0 + -0.2996*x_1
+Regression repeatedOrZeroEstimator: 47.4080 + 0.6784*x_0 + -0.1690*x_1
+Regression fastLZEstimator: -48.2634 + 0.9028*x_0 + -0.0347*x_1
+Regression zlibBestEstimator: -59.6952 + 0.9918*x_0 + -0.0036*x_1
+Regression zlibBestBatchEstimator: 0.0008 + 1.0000*x_0 + 0.0000*x_1
+
+========= TRAINING SET STATS: SCALAR MODEL, 1D REGRESSION, 2D REGRESSION ==========
+
+ mean-absolute-error uncompressedSizeEstimator     67.43     58.77     58.76
+ mean-absolute-error           cheap0Estimator     67.72     63.48     76.45
+ mean-absolute-error           cheap1Estimator     66.36     62.50     76.45
+ mean-absolute-error           cheap2Estimator     65.53     61.71     76.45
+ mean-absolute-error           cheap3Estimator     65.10     61.09     76.45
+ mean-absolute-error           cheap4Estimator     64.94     60.59     76.45
+ mean-absolute-error           cheap5Estimator     64.96     60.19     76.45
+ mean-absolute-error    repeatedByte0Estimator     66.51     62.81     77.51
+ mean-absolute-error    repeatedByte1Estimator     65.43     61.96     77.51
+ mean-absolute-error    repeatedByte2Estimator     64.81     61.27     77.51
+ mean-absolute-error   repeatedOrZeroEstimator     67.88     63.71     77.72
+ mean-absolute-error           fastLZEstimator     40.30     39.37     38.80
+ mean-absolute-error         zlibBestEstimator     44.92     39.21     39.54
+ mean-absolute-error    zlibBestBatchEstimator      0.00      0.00      0.00
+
+ root-mean-sq-error  uncompressedSizeEstimator    352.99    244.00    244.00
+ root-mean-sq-error            cheap0Estimator    308.25    223.09    211.84
+ root-mean-sq-error            cheap1Estimator    312.52    225.40    211.84
+ root-mean-sq-error            cheap2Estimator    316.63    227.53    211.84
+ root-mean-sq-error            cheap3Estimator    320.51    229.47    211.84
+ root-mean-sq-error            cheap4Estimator    324.15    231.25    211.84
+ root-mean-sq-error            cheap5Estimator    327.55    232.87    211.84
+ root-mean-sq-error     repeatedByte0Estimator    306.25    221.73    205.82
+ root-mean-sq-error     repeatedByte1Estimator    310.89    224.26    205.82
+ root-mean-sq-error     repeatedByte2Estimator    315.27    226.57    205.82
+ root-mean-sq-error    repeatedOrZeroEstimator    308.65    222.63    210.17
+ root-mean-sq-error            fastLZEstimator    113.88     73.71     58.24
+ root-mean-sq-error          zlibBestEstimator    129.66     54.09     53.82
+ root-mean-sq-error     zlibBestBatchEstimator      0.00      0.01      0.01
+
+========= SCALAR MODEL, 1D REGRESSION, 2D REGRESSION ==========
+
+ mean-absolute-error uncompressedSizeEstimator     56.41     57.23     57.22
+ mean-absolute-error           cheap0Estimator     55.46     61.18     75.08
+ mean-absolute-error           cheap1Estimator     53.93     60.16     75.08
+ mean-absolute-error           cheap2Estimator     53.06     59.37     75.08
+ mean-absolute-error           cheap3Estimator     52.71     58.75     75.08
+ mean-absolute-error           cheap4Estimator     52.68     58.28     75.08
+ mean-absolute-error           cheap5Estimator     52.84     57.92     75.08
+ mean-absolute-error    repeatedByte0Estimator     54.17     60.39     76.26
+ mean-absolute-error    repeatedByte1Estimator     52.96     59.52     76.26
+ mean-absolute-error    repeatedByte2Estimator     52.34     58.85     76.26
+ mean-absolute-error   repeatedOrZeroEstimator     55.55     61.37     76.43
+ mean-absolute-error           fastLZEstimator     38.60     37.58     37.35
+ mean-absolute-error         zlibBestEstimator     41.72     37.38     37.62
+ mean-absolute-error    zlibBestBatchEstimator      0.00      0.00      0.00
+
+ root-mean-sq-error  uncompressedSizeEstimator    229.53    206.98    206.98
+ root-mean-sq-error            cheap0Estimator    186.65    188.97    192.88
+ root-mean-sq-error            cheap1Estimator    189.31    190.52    192.88
+ root-mean-sq-error            cheap2Estimator    192.40    192.12    192.88
+ root-mean-sq-error            cheap3Estimator    195.68    193.68    192.88
+ root-mean-sq-error            cheap4Estimator    198.99    195.17    192.88
+ root-mean-sq-error            cheap5Estimator    202.25    196.59    192.88
+ root-mean-sq-error     repeatedByte0Estimator    184.64    187.33    190.41
+ root-mean-sq-error     repeatedByte1Estimator    187.87    189.21    190.41
+ root-mean-sq-error     repeatedByte2Estimator    191.35    191.04    190.41
+ root-mean-sq-error    repeatedOrZeroEstimator    185.89    188.41    193.02
+ root-mean-sq-error            fastLZEstimator     96.97     61.94     51.64
+ root-mean-sq-error          zlibBestEstimator    101.93     45.68     45.59
+ root-mean-sq-error     zlibBestBatchEstimator      0.00      0.01      0.01
