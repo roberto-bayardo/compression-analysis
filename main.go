@@ -81,6 +81,7 @@ func main() {
 		repeatedByte1Estimator,
 		repeatedByte2Estimator,
 		repeatedOrZeroEstimator,
+		fastLZWithUpperBoundEstimator,
 		fastLZEstimator,
 		zlibBestEstimator,
 		zlibBestBatchEstimator, // final estimator value is always used as the "ground truth" against which others are measured
@@ -468,6 +469,14 @@ func zlibBestEstimator(tx []byte) float64 {
 
 func fastLZEstimator(tx []byte) float64 {
 	return float64(flzCompressLen(tx))
+}
+
+func fastLZWithUpperBoundEstimator(tx []byte) float64 {
+	fastLZSize := fastLZEstimator(tx) 
+	if fastLZSize > float64(len(tx)) {
+		return float64(len(tx))
+	}
+	return fastLZSize
 }
 
 // uncompressedSizeEstimator just returns the length of the input
