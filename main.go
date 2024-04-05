@@ -33,7 +33,20 @@ var (
 	// behavior of span batches which segregates the signatures from the more compressible parts of
 	// the tx during batch compression.
 	spanBatchMode = true
+
+	// The fixed coefficients to be used in the Fjord hard fork
+	fjordRegression = regression{
+		coefficients: []float64{-27.32189, 1.031462, -.0088664},
+	}
 )
+
+type regression struct {
+	coefficients []float64
+}
+
+func fjordModel(row []float64) (float64, error) {
+	return fjordRegression.Predict(row), nil
+}
 
 func main() {
 	blockNum := big.NewInt(12000000) // starting block; will iterate backwards from here
@@ -185,36 +198,36 @@ func main() {
 
 	if separateTrainTest {
 		// print out the training set performance stats separately from the test set
-		scalarMae, scalarRmse := evaluate(estimators, trainColumns, scalarModels)
-		regMae, regRmse := evaluate(estimators, trainColumns, singleFeatureRegressionModels)
-		twoMae, twoRmse := evaluate(estimators, trainColumns, twoFeatureRegressionModels)
+		scalarMae, scalarRmse := evaluate(trainColumns, scalarModels)
+		regMae, regRmse := evaluate(trainColumns, singleFeatureRegressionModels)
+		twoMae, twoRmse := evaluate(trainColumns, twoFeatureRegressionModels)
 		fmt.Println("\n========= TRAINING SET STATS: SCALAR MODEL, 1D REGRESSION, 2D REGRESSION ==========\n")
 		prettyPrintStats("mean-absolute-error", estimators, scalarMae, regMae, twoMae)
 		fmt.Println()
 		prettyPrintStats("root-mean-sq-error ", estimators, scalarRmse, regRmse, twoRmse)
 	}
 
-	scalarMae, scalarRmse := evaluate(estimators, testColumns, scalarModels)
-	regMae, regRmse := evaluate(estimators, testColumns, singleFeatureRegressionModels)
-	twoMae, twoRmse := evaluate(estimators, testColumns, twoFeatureRegressionModels)
+	scalarMae, scalarRmse := evaluate(testColumns, scalarModels)
+	regMae, regRmse := evaluate(testColumns, singleFeatureRegressionModels)
+	twoMae, twoRmse := evaluate(testColumns, twoFeatureRegressionModels)
 	fmt.Println("\n========= SCALAR MODEL, 1D REGRESSION, 2D REGRESSION ==========\n")
 	prettyPrintStats("mean-absolute-error", estimators, scalarMae, regMae, twoMae)
 	fmt.Println()
 	prettyPrintStats("root-mean-sq-error ", estimators, scalarRmse, regRmse, twoRmse)
 }
 
-func evaluate(estimators []estimator, columns [][]float64, models []model) (mae []float64, rmse []float64) {
+func evaluate(columns [][]float64, models []model) (mae []float64, rmse []float64) {
 	// compute per-tx error values
-	absoluteErrors := make([][]float64, len(estimators))
-	squaredErrors := make([][]float64, len(estimators))
+	absoluteErrors := make([][]float64, len(columns))
+	squaredErrors := make([][]float64, len(columns))
 
-	for j := range estimators {
+	for j := range columns {
 		ae := make([]float64, len(columns[j]))
 		se := make([]float64, len(columns[j]))
 		for i := range columns[j] {
-			// output of the final estimator (which we assume to be the batched compression
-			// algorithm actually used by the batcher) is used as the "ground truth".
-			truth := columns[len(estimators)-1][i]
+			// final column (which we assume to be the batched compression algorithm actually used
+			// by the batcher) is used as the "ground truth".
+			truth := columns[len(columns)-1][i]
 			var estimate float64
 			data := []float64{columns[j][i], columns[0][i]}
 			var err error
@@ -232,7 +245,7 @@ func evaluate(estimators []estimator, columns [][]float64, models []model) (mae 
 
 	// compute mean error metrics
 	mae = []float64{}
-	for j := range estimators {
+	for j := range columns {
 		mas, err := stats.Mean(stats.Float64Data(absoluteErrors[j]))
 		if err != nil {
 			log.Fatal(err)
@@ -240,7 +253,7 @@ func evaluate(estimators []estimator, columns [][]float64, models []model) (mae 
 		mae = append(mae, mas)
 	}
 	rmse = []float64{}
-	for j := range estimators {
+	for j := range columns {
 		mse, err := stats.Mean(stats.Float64Data(squaredErrors[j]))
 		if err != nil {
 			log.Fatal(err)
@@ -248,10 +261,6 @@ func evaluate(estimators []estimator, columns [][]float64, models []model) (mae 
 		rmse = append(rmse, math.Sqrt(mse))
 	}
 	return mae, rmse
-}
-
-type regression struct {
-	coefficients []float64
 }
 
 func (r *regression) Learn(rows [][]float64, y []float64) error {
