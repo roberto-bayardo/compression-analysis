@@ -28,19 +28,21 @@ type estimator func([]byte) float64
 // for the size of that transaction after batch compression.
 type model func(data []float64) (float64, error)
 
+var (
+	// spanBatchMode will remove signatures from the tx rlp before compression. This simulates the
+	// behavior of span batches which segregates the signatures from the more compressible parts of
+	// the tx during batch compression.
+	spanBatchMode = true
+)
+
 func main() {
-	blockNum := big.NewInt(9885000) // starting block; will iterate backwards from here
-	txsToFetch := 20000             // min # of transactions to include in our sample
-	minTxSize := 0                  // minimum transaction size to include in our sample whether to
+	blockNum := big.NewInt(12000000) // starting block; will iterate backwards from here
+	txsToFetch := 20000              // min # of transactions to include in our sample
+	minTxSize := 0                   // minimum transaction size to include in our sample whether to
 
 	// If this is true, then the functions will be derived on the oldest half of the transactions,
 	// and evaluated on the newer half.
 	separateTrainTest := true
-
-	// spanBatchMode will remove signatures from the tx rlp before compression. This simulates the
-	// behavior of span batches which segregates the signatures from the more compressible parts of
-	// the tx during batch compression.
-	spanBatchMode := true
 
 	// remote node URL or local database location:
 	// clientLocation := "https://mainnet.base.org"
@@ -71,16 +73,16 @@ func main() {
 
 	estimators := []estimator{
 		uncompressedSizeEstimator, // first estimator should always return the length of the input
-		cheap0Estimator,
-		cheap1Estimator,
-		cheap2Estimator,
-		cheap3Estimator,
+		//cheap0Estimator,
+		//		cheap1Estimator,
+		//cheap2Estimator,
+		//cheap3Estimator,
 		cheap4Estimator,
-		cheap5Estimator,
-		repeatedByte0Estimator,
-		repeatedByte1Estimator,
-		repeatedByte2Estimator,
-		repeatedOrZeroEstimator,
+		//cheap5Estimator,
+		//repeatedByte0Estimator,
+		//repeatedByte1Estimator,
+		//repeatedByte2Estimator,
+		//repeatedOrZeroEstimator,
 		fastLZEstimator,
 		zlibBestEstimator,
 		zlibBestBatchEstimator, // final estimator value is always used as the "ground truth" against which others are measured
@@ -116,11 +118,6 @@ func main() {
 			}
 			if len(b) < minTxSize {
 				continue
-			}
-			if spanBatchMode {
-				// for span batch mode we trim the signature, and assume there is no estimation
-				// error on this component were we to just treat it as entirely uncompressible.
-				b = b[:len(b)-68.]
 			}
 			if bootstrapCount < bootstrapTxs {
 				zlibBestBatchEstimator(b)
@@ -551,6 +548,11 @@ func (w *zlibBatchEstimator) reset() {
 }
 
 func (w *zlibBatchEstimator) write(p []byte) float64 {
+	if spanBatchMode {
+		// span batch mode segregates the tx signatures, which we simulate by stripping them out
+		// before compression and treating them as 68 uncompressible bytes.
+		p = p[:len(p)-68.]
+	}
 	// targeting:
 	//	b[0] == 0-64kb
 	//	b[1] == 64kb-128kb
@@ -586,7 +588,11 @@ func (w *zlibBatchEstimator) write(p []byte) float64 {
 		w.b[0] = tb
 		w.w[0] = tw
 	}
-	return float64(after - before - 2) // flush writes 2 extra "sync" bytes so don't count those
+	r := float64(after - before - 2) // flush writes 2 extra "sync" bytes so don't count those
+	if spanBatchMode {
+		return r + 68.
+	}
+	return r
 }
 
 func flzCompressLen(ib []byte) uint32 {
