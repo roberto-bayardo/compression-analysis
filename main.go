@@ -34,6 +34,10 @@ var (
 	// the tx during batch compression.
 	spanBatchMode = true
 
+	// numBlobs simulates batching with a given number of blobs per transaction. More blobs allows
+	// for more batch compression, thus this affects the ground truth.
+	numBlobs = 6
+
 	// The fixed coefficients to be used in the Fjord hard fork
 	fjordRegression = regression{
 		coefficients: []float64{-27.32189, 1.031462, -.0088664},
@@ -62,7 +66,7 @@ func main() {
 	clientLocation := "https://base-mainnet-dev.cbhq.net:8545"
 	//clientLocation := "/data"
 
-	bootstrapTxs := 100 // min number of txs to use to bootstrap the batch compressor
+	bootstrapTxs := 1000 // min number of txs to use to bootstrap the batch compressor
 
 	fmt.Printf("Starting block: %v, min tx sample size: %v, min tx size: %v, span batch mode: %v\n",
 		blockNum, txsToFetch, minTxSize, spanBatchMode)
@@ -559,8 +563,8 @@ func (w *zlibBatchEstimator) reset() {
 func (w *zlibBatchEstimator) write(p []byte) float64 {
 	if spanBatchMode {
 		// span batch mode segregates the tx signatures, which we simulate by stripping them out
-		// before compression and treating them as 68 uncompressible bytes.
-		p = p[:len(p)-68.]
+		// before compression and treating them as 65 uncompressible bytes.
+		p = p[:len(p)-65]
 	}
 	// targeting:
 	//	b[0] == 0-64kb
@@ -576,7 +580,7 @@ func (w *zlibBatchEstimator) write(p []byte) float64 {
 	}
 	after := w.b[1].Len()
 	// if b[1] > 64kb, write to b[0]
-	if w.b[1].Len() > 64*1024 {
+	if w.b[1].Len() > numBlobs*64*1024 {
 		_, err = w.w[0].Write(p)
 		if err != nil {
 			log.Fatal(err)
@@ -587,7 +591,7 @@ func (w *zlibBatchEstimator) write(p []byte) float64 {
 		}
 	}
 	// if b[1] > 128kb, rotate
-	if w.b[1].Len() > 128*1024 {
+	if w.b[1].Len() > numBlobs*128*1024 {
 		w.b[1].Reset()
 		w.w[1].Reset(&w.b[1])
 		tb := w.b[1]
@@ -599,7 +603,7 @@ func (w *zlibBatchEstimator) write(p []byte) float64 {
 	}
 	r := float64(after - before - 2) // flush writes 2 extra "sync" bytes so don't count those
 	if spanBatchMode {
-		return r + 68.
+		return r + 65.
 	}
 	return r
 }
