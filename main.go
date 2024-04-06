@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"compress/zlib"
-	"context"
 	"fmt"
 	"log"
 	"math"
@@ -11,12 +10,8 @@ import (
 	"os"
 	"reflect"
 	"runtime"
-	"strings"
 	"text/tabwriter"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/montanaflynn/stats"
 )
 
@@ -29,6 +24,19 @@ type estimator func([]byte) float64
 type model func(data []float64) (float64, error)
 
 var (
+	blockNum   = big.NewInt(12000000) // starting block; will iterate backwards from here
+	txsToFetch = 200000               // min # of transactions to include in our sample
+	minTxSize  = 0                    // minimum transaction size to include in our sample whether to
+
+	// If this is true, then the functions will be derived on the oldest half of the transactions,
+	// and evaluated on the newer half.
+	separateTrainTest = true
+
+	// remote node URL or local database location:
+	// clientLocation = "https://mainnet.base.org"
+	clientLocation = "https://base-mainnet-dev.cbhq.net:8545"
+	//clientLocation = "/data"
+
 	// spanBatchMode will remove signatures from the tx rlp before compression. This simulates the
 	// behavior of span batches which segregates the signatures from the more compressible parts of
 	// the tx during batch compression.
@@ -52,23 +60,15 @@ func fjordModel(row []float64) (float64, error) {
 	return fjordRegression.Predict(row), nil
 }
 
+type TxIterator interface {
+	Next() []byte
+	Close()
+}
+
 func main() {
-	blockNum := big.NewInt(12000000) // starting block; will iterate backwards from here
-	txsToFetch := 20000              // min # of transactions to include in our sample
-	minTxSize := 0                   // minimum transaction size to include in our sample whether to
-
-	// If this is true, then the functions will be derived on the oldest half of the transactions,
-	// and evaluated on the newer half.
-	separateTrainTest := true
-
-	// remote node URL or local database location:
-	// clientLocation := "https://mainnet.base.org"
-	clientLocation := "https://base-mainnet-dev.cbhq.net:8545"
-	//clientLocation := "/data"
-
 	bootstrapTxs := 1000 // min number of txs to use to bootstrap the batch compressor
 
-	fmt.Printf("Starting block: %v, min tx sample size: %v, min tx size: %v, span batch mode: %v\n",
+	fmt.Printf("Starting block: %v, tx sample size: %v, min tx size: %v, span batch mode: %v\n",
 		blockNum, txsToFetch, minTxSize, spanBatchMode)
 	if separateTrainTest {
 		fmt.Println("Training over the older half of transactions, evaluating over the newer half.")
@@ -76,22 +76,17 @@ func main() {
 		fmt.Println("Evaluating over the same set of transactions used to compute the regression.")
 	}
 
-	var client Client
-	var err error
-	if strings.HasPrefix(clientLocation, "http://") || strings.HasPrefix(clientLocation, "https://") {
-		client, err = ethclient.Dial(clientLocation)
-	} else {
-		client, err = NewLocalClient(clientLocation)
-	}
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer client.Close()
+	//fmt.Printf("RPC endpoint: %v\n", clientLocation)
+	//txIter := NewTxIterRPC(clientLocation, blockNum)
+	txFilename := "/Users/bayardo/tmp/base_post_ecotone_txs.bin"
+	fmt.Printf("Transaction file name: %v\n", txFilename)
+	txIter := NewTxIterFile(txFilename)
+	defer txIter.Close()
 
 	estimators := []estimator{
 		uncompressedSizeEstimator, // first estimator should always return the length of the input
 		//cheap0Estimator,
-		//		cheap1Estimator,
+		//cheap1Estimator,
 		//cheap2Estimator,
 		//cheap3Estimator,
 		cheap4Estimator,
@@ -107,50 +102,27 @@ func main() {
 	columns := make([][]float64, len(estimators))
 
 	bootstrapCount := 0
-
-	var parentBlockHash *common.Hash
-	for {
-		var block *types.Block
-		if parentBlockHash == nil {
-			block, err = client.BlockByNumber(context.Background(), blockNum)
-		} else {
-			block, err = client.BlockByHash(context.Background(), *parentBlockHash)
+	for b := txIter.Next(); ; b = txIter.Next() {
+		if b == nil {
+			log.Fatal("ran out of transactions")
 		}
-		if err != nil {
-			log.Fatal(err)
+		if len(b) < minTxSize {
+			continue
 		}
-		if block == nil {
-			log.Fatal("not enough blocks")
+		if bootstrapCount < bootstrapTxs {
+			zlibBestBatchEstimator(b)
+			bootstrapCount++
+			continue
 		}
-		p := block.ParentHash()
-		parentBlockHash = &p
-		//fmt.Println("Blocknum:", blockNum, "Txs:", len(columns[0]))
-		for _, tx := range block.Transactions() {
-			if tx.Type() == types.DepositTxType {
-				continue
-			}
-			b, err := tx.MarshalBinary()
-			if err != nil {
-				log.Fatal(err)
-			}
-			if len(b) < minTxSize {
-				continue
-			}
-			if bootstrapCount < bootstrapTxs {
-				zlibBestBatchEstimator(b)
-				bootstrapCount++
-				continue
-			}
-			for j := range estimators {
-				estimate := estimators[j](b)
-				columns[j] = append(columns[j], estimate)
-			}
-			if len(columns[0])%1000 == 0 {
-				fmt.Println(len(columns[0]), "out of", txsToFetch)
-			}
+		for j := range estimators {
+			estimate := estimators[j](b)
+			columns[j] = append(columns[j], estimate)
 		}
-		if len(columns[0]) > txsToFetch {
-			fmt.Println("Reached tx limit. Txs:", len(columns[0]), "Last block fetched:", block.Number())
+		if len(columns[0])%1000 == 0 {
+			fmt.Println(len(columns[0]), "out of", txsToFetch)
+		}
+		if len(columns[0]) == txsToFetch {
+			fmt.Println("Reached tx limit.")
 			break
 		}
 	}
@@ -214,7 +186,7 @@ func main() {
 	scalarMae, scalarRmse := evaluate(testColumns, scalarModels)
 	regMae, regRmse := evaluate(testColumns, singleFeatureRegressionModels)
 	twoMae, twoRmse := evaluate(testColumns, twoFeatureRegressionModels)
-	fmt.Println("\n========= SCALAR MODEL, 1D REGRESSION, 2D REGRESSION ==========\n")
+	fmt.Println("\n========= TEST SET STATS: SCALAR MODEL, 1D REGRESSION, 2D REGRESSION ==========\n")
 	prettyPrintStats("mean-absolute-error", estimators, scalarMae, regMae, twoMae)
 	fmt.Println()
 	prettyPrintStats("root-mean-sq-error ", estimators, scalarRmse, regRmse, twoRmse)
