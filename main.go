@@ -25,7 +25,7 @@ type model func(data []float64) (float64, error)
 
 var (
 	blockNum   = big.NewInt(12000000) // starting block; will iterate backwards from here
-	txsToFetch = 200000               // min # of transactions to include in our sample
+	txsToFetch = 20000000             // min # of transactions to include in our sample
 	minTxSize  = 0                    // minimum transaction size to include in our sample whether to
 
 	// If this is true, then the functions will be derived on the oldest half of the transactions,
@@ -68,18 +68,16 @@ type TxIterator interface {
 func main() {
 	bootstrapTxs := 1000 // min number of txs to use to bootstrap the batch compressor
 
-	fmt.Printf("Starting block: %v, tx sample size: %v, min tx size: %v, span batch mode: %v\n",
-		blockNum, txsToFetch, minTxSize, spanBatchMode)
+	fmt.Printf("Tx sample size: %v, min tx size: %v, span batch mode: %v, num blobs: %v\n",
+		txsToFetch, minTxSize, spanBatchMode, numBlobs)
 	if separateTrainTest {
 		fmt.Println("Training over the older half of transactions, evaluating over the newer half.")
 	} else {
 		fmt.Println("Evaluating over the same set of transactions used to compute the regression.")
 	}
 
-	//fmt.Printf("RPC endpoint: %v\n", clientLocation)
 	//txIter := NewTxIterRPC(clientLocation, blockNum)
-	txFilename := "/Users/bayardo/tmp/base_post_ecotone_txs.bin"
-	fmt.Printf("Transaction file name: %v\n", txFilename)
+	txFilename := "/Users/bayardo/tmp/op_post_ecotone_txs_result.bin"
 	txIter := NewTxIterFile(txFilename)
 	defer txIter.Close()
 
@@ -104,7 +102,8 @@ func main() {
 	bootstrapCount := 0
 	for b := txIter.Next(); ; b = txIter.Next() {
 		if b == nil {
-			log.Fatal("ran out of transactions")
+			log.Println("ran out of transactions, exiting loop")
+			break
 		}
 		if len(b) < minTxSize {
 			continue
@@ -127,11 +126,6 @@ func main() {
 		}
 	}
 
-	// print summary statistics of entire dataset
-	avgs := computeMeans(columns)
-	fmt.Println()
-	prettyPrintStats("mean", estimators, avgs)
-
 	start := 0
 	end := len(columns[0])
 	if separateTrainTest {
@@ -142,7 +136,30 @@ func main() {
 	for j := range trainColumns {
 		trainColumns[j] = columns[j][start:end]
 	}
+	start = 0
+	end = len(columns[0])
+	if separateTrainTest {
+		// evaluate the functions only over newer transactions (those that came first)
+		end = (end / 2) - 1
+	}
+	testColumns := make([][]float64, len(estimators))
+	for j := range testColumns {
+		testColumns[j] = columns[j][start:end]
+	}
 
+	if separateTrainTest {
+		fmt.Println("\n========= TRAINING SET SUMMARY STATS =============")
+		avgs := computeMeans(trainColumns)
+		fmt.Println()
+		prettyPrintStats("mean", estimators, avgs)
+	}
+
+	fmt.Println("\n========= TEST SET SUMMARY STATS =============")
+	avgs := computeMeans(testColumns)
+	fmt.Println()
+	prettyPrintStats("mean", estimators, avgs)
+
+	fmt.Println("\nScalar models:")
 	avgs = computeMeans(trainColumns)
 	scalarModels := make([]model, len(estimators))
 	scalars := make([]float64, len(avgs))
@@ -160,17 +177,6 @@ func main() {
 
 	singleFeatureRegressionModels := doRegression(estimators, trainColumns, false)
 	twoFeatureRegressionModels := doRegression(estimators, trainColumns, true)
-
-	start = 0
-	end = len(columns[0])
-	if separateTrainTest {
-		// evaluate the functions only over newer transactions (those that came first)
-		end = (end / 2) - 1
-	}
-	testColumns := make([][]float64, len(estimators))
-	for j := range testColumns {
-		testColumns[j] = columns[j][start:end]
-	}
 
 	if separateTrainTest {
 		// print out the training set performance stats separately from the test set
@@ -224,7 +230,7 @@ func evaluate(columns [][]float64, models []model) (mae []float64, rmse []float6
 	for j := range columns {
 		mas, err := stats.Mean(stats.Float64Data(absoluteErrors[j]))
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalln(err)
 		}
 		mae = append(mae, mas)
 	}
@@ -232,7 +238,7 @@ func evaluate(columns [][]float64, models []model) (mae []float64, rmse []float6
 	for j := range columns {
 		mse, err := stats.Mean(stats.Float64Data(squaredErrors[j]))
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalln(err)
 		}
 		rmse = append(rmse, math.Sqrt(mse))
 	}
@@ -346,7 +352,7 @@ func computeMeans(columns [][]float64) []float64 {
 	for j := range columns {
 		avg, err := stats.Mean(stats.Float64Data(columns[j]))
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalln(err)
 		}
 		avgs = append(avgs, avg)
 	}
@@ -440,7 +446,7 @@ func zlibBestEstimator(tx []byte) float64 {
 	var b bytes.Buffer
 	w, err := zlib.NewWriterLevel(&b, zlib.BestCompression)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalln(err)
 	}
 	defer w.Close()
 	w.Write(tx)
@@ -519,7 +525,7 @@ func newZlibBatchEstimator() *zlibBatchEstimator {
 	for i := range b.w {
 		b.w[i], err = zlib.NewWriterLevel(&b.b[i], zlib.BestCompression)
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalln(err)
 		}
 	}
 	return b
@@ -544,22 +550,22 @@ func (w *zlibBatchEstimator) write(p []byte) float64 {
 	before := w.b[1].Len()
 	_, err := w.w[1].Write(p)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalln(err)
 	}
 	err = w.w[1].Flush()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalln(err)
 	}
 	after := w.b[1].Len()
 	// if b[1] > 64kb, write to b[0]
 	if w.b[1].Len() > numBlobs*64*1024 {
 		_, err = w.w[0].Write(p)
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalln(err)
 		}
 		err = w.w[0].Flush()
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalln(err)
 		}
 	}
 	// if b[1] > 128kb, rotate

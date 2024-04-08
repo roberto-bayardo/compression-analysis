@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"math/big"
 	"strings"
@@ -19,6 +20,7 @@ type TxIterRPC struct {
 }
 
 func NewTxIterRPC(rpcEndpoint string, startBlock *big.Int) *TxIterRPC {
+	fmt.Println("Starting block: %v, RPC endpoint: %v\n", startBlock, rpcEndpoint)
 	it := &TxIterRPC{}
 	var err error
 	if strings.HasPrefix(rpcEndpoint, "http://") || strings.HasPrefix(rpcEndpoint, "https://") {
@@ -27,11 +29,11 @@ func NewTxIterRPC(rpcEndpoint string, startBlock *big.Int) *TxIterRPC {
 		it.client, err = NewLocalClient(rpcEndpoint)
 	}
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalln(err)
 	}
 	it.block, err = it.client.BlockByNumber(context.Background(), startBlock)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalln(err)
 	}
 	return it
 }
@@ -45,7 +47,7 @@ func (it *TxIterRPC) Next() []byte {
 	if it.nextTx == len(txs) {
 		it.block, err = it.client.BlockByHash(context.Background(), it.block.ParentHash())
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalln(err)
 		}
 		it.nextTx = 0
 		return it.Next()
@@ -58,7 +60,7 @@ func (it *TxIterRPC) Next() []byte {
 	}
 	b, err := tx.MarshalBinary()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalln(err)
 	}
 	return b
 }

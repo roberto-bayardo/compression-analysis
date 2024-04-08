@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/hex"
+	"fmt"
 	"log"
 	"os"
 )
@@ -13,11 +14,12 @@ type TxIterFile struct {
 }
 
 func NewTxIterFile(filename string) *TxIterFile {
+	fmt.Printf("Transaction file name: %v\n", filename)
 	it := &TxIterFile{}
 	var err error
 	it.file, err = os.Open(filename)
 	if err != nil {
-		log.Fatal("couldn't open file", err)
+		log.Fatalln("couldn't open file", err)
 	}
 	it.scanner = bufio.NewScanner(it.file)
 	buf := make([]byte, 0, 64*1024)
@@ -27,12 +29,15 @@ func NewTxIterFile(filename string) *TxIterFile {
 
 func (it *TxIterFile) Next() []byte {
 	if !it.scanner.Scan() {
-		log.Fatal("Couldn't scan next line in file", it.scanner.Err())
+		if it.scanner.Err() == nil {
+			return nil
+		}
+		log.Fatalln("Couldn't scan next line in file:", it.scanner.Err())
 	}
 	line := it.scanner.Text()
 	b, err := hex.DecodeString(line)
 	if err != nil {
-		log.Fatal("Couldn't decode line from file", err)
+		log.Fatalln("Couldn't decode line from file:", err)
 	}
 	return b
 }
