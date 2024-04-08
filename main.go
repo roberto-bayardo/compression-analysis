@@ -46,6 +46,11 @@ var (
 	// for more batch compression, thus this affects the ground truth.
 	numBlobs = 6
 
+	// numTestPartitions is the number of equal-sized partitions of test set data over which to
+	// compute error metrics, each partition being from a period successively more distant from the
+	// training set transactions.
+	numTestPartitions = 5
+
 	// The fixed coefficients to be used in the Fjord hard fork
 	fjordRegression = regression{
 		coefficients: []float64{-27.32189, 1.031462, -.0088664},
@@ -65,21 +70,27 @@ type TxIterator interface {
 	Close()
 }
 
-func main() {
-	bootstrapTxs := 1000 // min number of txs to use to bootstrap the batch compressor
+func init() {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+}
 
+func main() {
 	fmt.Printf("Tx sample size: %v, min tx size: %v, span batch mode: %v, num blobs: %v\n",
 		txsToFetch, minTxSize, spanBatchMode, numBlobs)
-	if separateTrainTest {
-		fmt.Println("Training over the older half of transactions, evaluating over the newer half.")
-	} else {
-		fmt.Println("Evaluating over the same set of transactions used to compute the regression.")
-	}
+
+	bootstrapTxs := 1000 // min number of txs to use to bootstrap the batch compressor
+	fmt.Printf("Bootstrapping batch compressor with %d transactions.\n", bootstrapTxs)
 
 	//txIter := NewTxIterRPC(clientLocation, blockNum)
 	txFilename := "/Users/bayardo/tmp/op_post_ecotone_txs_result.bin"
 	txIter := NewTxIterFile(txFilename)
 	defer txIter.Close()
+
+	if separateTrainTest {
+		fmt.Println("Training over the older half of transactions, evaluating over the newer half.")
+	} else {
+		fmt.Println("Evaluating over the same set of transactions used to compute the regression.")
+	}
 
 	estimators := []estimator{
 		uncompressedSizeEstimator, // first estimator should always return the length of the input
@@ -100,6 +111,7 @@ func main() {
 	columns := make([][]float64, len(estimators))
 
 	bootstrapCount := 0
+	txsToFetch += bootstrapTxs
 	for b := txIter.Next(); ; b = txIter.Next() {
 		if b == nil {
 			log.Println("ran out of transactions, exiting loop")
@@ -117,7 +129,7 @@ func main() {
 			estimate := estimators[j](b)
 			columns[j] = append(columns[j], estimate)
 		}
-		if len(columns[0])%1000 == 0 {
+		if len(columns[0])%10000 == 0 {
 			fmt.Println(len(columns[0]), "out of", txsToFetch)
 		}
 		if len(columns[0]) == txsToFetch {
@@ -140,13 +152,16 @@ func main() {
 	end = len(columns[0])
 	if separateTrainTest {
 		// evaluate the functions only over newer transactions (those that came first)
-		end = (end / 2) - 1
+		end = end / 2
 	}
 	testColumns := make([][]float64, len(estimators))
 	for j := range testColumns {
 		testColumns[j] = columns[j][start:end]
 	}
 
+	if !separateTrainTest {
+		numTestPartitions = 0
+	}
 	if separateTrainTest {
 		fmt.Println("\n========= TRAINING SET SUMMARY STATS =============")
 		avgs := computeMeans(trainColumns)
@@ -154,10 +169,24 @@ func main() {
 		prettyPrintStats("mean", estimators, avgs)
 	}
 
-	fmt.Println("\n========= TEST SET SUMMARY STATS =============")
+	fmt.Println("\n======== FULL TEST SET SUMMARY STATS ============")
 	avgs := computeMeans(testColumns)
 	fmt.Println()
 	prettyPrintStats("mean", estimators, avgs)
+
+	for i := 0; i < numTestPartitions; i++ {
+		partitionSize := len(testColumns[0]) / numTestPartitions
+		start = i * partitionSize
+		end = start + partitionSize - 1
+		fmt.Printf("\n======= TEST SET SUMMARY STATS (partition #%d) ========\n", i)
+		partitionColumns := make([][]float64, len(estimators))
+		for j := range partitionColumns {
+			partitionColumns[j] = testColumns[j][start:end]
+		}
+		avgs := computeMeans(partitionColumns)
+		fmt.Println()
+		prettyPrintStats("mean", estimators, avgs)
+	}
 
 	fmt.Println("\nScalar models:")
 	avgs = computeMeans(trainColumns)
@@ -192,10 +221,27 @@ func main() {
 	scalarMae, scalarRmse := evaluate(testColumns, scalarModels)
 	regMae, regRmse := evaluate(testColumns, singleFeatureRegressionModels)
 	twoMae, twoRmse := evaluate(testColumns, twoFeatureRegressionModels)
-	fmt.Println("\n========= TEST SET STATS: SCALAR MODEL, 1D REGRESSION, 2D REGRESSION ==========\n")
+	fmt.Println("\n====== FULL TEST SET STATS: SCALAR MODEL, 1D REGRESSION, 2D REGRESSION ======\n")
 	prettyPrintStats("mean-absolute-error", estimators, scalarMae, regMae, twoMae)
 	fmt.Println()
 	prettyPrintStats("root-mean-sq-error ", estimators, scalarRmse, regRmse, twoRmse)
+
+	for i := 0; i < numTestPartitions; i++ {
+		partitionSize := len(testColumns[0]) / numTestPartitions
+		start = i * partitionSize
+		end = start + partitionSize - 1
+		partitionColumns := make([][]float64, len(estimators))
+		for j := range partitionColumns {
+			partitionColumns[j] = testColumns[j][start:end]
+		}
+		scalarMae, scalarRmse := evaluate(partitionColumns, scalarModels)
+		regMae, regRmse := evaluate(partitionColumns, singleFeatureRegressionModels)
+		twoMae, twoRmse := evaluate(partitionColumns, twoFeatureRegressionModels)
+		fmt.Printf("\n====== TEST SET STATS (partition %d): SCALAR MODEL, 1D REGRESSION, 2D REGRESSION ======\n\n", i)
+		prettyPrintStats("mean-absolute-error", estimators, scalarMae, regMae, twoMae)
+		fmt.Println()
+		prettyPrintStats("root-mean-sq-error ", estimators, scalarRmse, regRmse, twoRmse)
+	}
 }
 
 func evaluate(columns [][]float64, models []model) (mae []float64, rmse []float64) {
@@ -586,9 +632,17 @@ func (w *zlibBatchEstimator) write(p []byte) float64 {
 	return r
 }
 
+var (
+	// buffer for flzCompressLen -- need to fix this if we start using it concurrently
+	ht = make([]uint32, 8192)
+)
+
 func flzCompressLen(ib []byte) uint32 {
+	for i := 0; i < len(ht); i++ {
+		ht[i] = 0
+	}
+	ht = make([]uint32, 8192)
 	n := uint32(0)
-	ht := make([]uint32, 8192)
 	u24 := func(i uint32) uint32 {
 		return uint32(ib[i]) | (uint32(ib[i+1]) << 8) | (uint32(ib[i+2]) << 16)
 	}
