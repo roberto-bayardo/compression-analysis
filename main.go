@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"math/big"
+	//"math/big"
 	"os"
 	"reflect"
 	"runtime"
@@ -24,18 +24,12 @@ type estimator func([]byte) float64
 type model func(data []float64) (float64, error)
 
 var (
-	blockNum   = big.NewInt(12000000) // starting block; will iterate backwards from here
-	txsToFetch = 20000000             // min # of transactions to include in our sample
-	minTxSize  = 0                    // minimum transaction size to include in our sample whether to
+	txsToFetch = 20000000 // max # of transactions to include in our sample
+	minTxSize  = 0        // minimum transaction size to include in our sample whether to
 
 	// If this is true, then the functions will be derived on the oldest half of the transactions,
 	// and evaluated on the newer half.
 	separateTrainTest = true
-
-	// remote node URL or local database location:
-	// clientLocation = "https://mainnet.base.org"
-	clientLocation = "https://base-mainnet-dev.cbhq.net:8545"
-	//clientLocation = "/data"
 
 	// spanBatchMode will remove signatures from the tx rlp before compression. This simulates the
 	// behavior of span batches which segregates the signatures from the more compressible parts of
@@ -55,6 +49,10 @@ var (
 	fjordRegression = regression{
 		coefficients: []float64{-27.32189, 1.031462, -.0088664},
 	}
+
+	// compressedSizeFloor is the smallest size we ever expect a transaction to reach after batch
+	// compression.  It is used to lower-bound model outputs.
+	compressedSizeFloor = 71.
 )
 
 type regression struct {
@@ -81,8 +79,14 @@ func main() {
 	bootstrapTxs := 1000 // min number of txs to use to bootstrap the batch compressor
 	fmt.Printf("Bootstrapping batch compressor with %d transactions.\n", bootstrapTxs)
 
+	//clientLocation = "https://mainnet.base.org"
+	//clientLocation = "https://base-mainnet-dev.cbhq.net:8545"
+	//clientLocation = "/data"
+	//blockNum   = big.NewInt(12000000) // starting block; will iterate backwards from here
 	//txIter := NewTxIterRPC(clientLocation, blockNum)
-	txFilename := "/Users/bayardo/tmp/op_post_ecotone_txs_result.bin"
+
+	//txFilename := "/Users/bayardo/tmp/op_post_ecotone_txs_result.bin"false
+	txFilename := "/Users/bayardo/tmp/base_post_ecotone_txs.bin"
 	txIter := NewTxIterFile(txFilename)
 	defer txIter.Close()
 
@@ -369,17 +373,26 @@ func doRegression(estimators []estimator, columns [][]float64, uncompressedSizeF
 	for j := range estimators {
 		var featureRows [][]float64
 		for i := range columns[j] {
+			var data []float64
 			estimator := columns[j][i]
-			data := []float64{estimator}
 			if uncompressedSizeFeature {
-				data = append(data, columns[0][i]) // assumes the "uncompressed estimator" is always first
+				data = []float64{estimator, columns[0][i]} // assumes the "uncompressed estimator" is always first
+			} else {
+				data = []float64{estimator}
 			}
 			featureRows = append(featureRows, data)
 		}
 		reg := regression{}
-		err := reg.Learn(featureRows, truth)
-		if err != nil {
-			panic(err)
+		if j == len(estimators)-1 {
+			// we already know coefficients for an estimator whose output always equals the ground
+			// truth, though if you change the learning algorithm it makes sense to verify it's
+			// deriving the expected coefficients even in this case.
+			reg.coefficients = []float64{0.0, 1.0, 0.0}
+		} else {
+			err := reg.Learn(featureRows, truth)
+			if err != nil {
+				log.Fatalln(err)
+			}
 		}
 		fmt.Printf("\nRegression %v: %v\n", getFuncName(estimators[j]), reg)
 		models[j] = func(row []float64) (float64, error) {
@@ -387,6 +400,13 @@ func doRegression(estimators []estimator, columns [][]float64, uncompressedSizeF
 				row = row[:1]
 			}
 			r := reg.Predict(row)
+			if r < compressedSizeFloor {
+				if r < 0.0 {
+					// < 0.0 predictions do not seem to happen but theoretically the can
+					fmt.Println("ALERT!", r, row, reg.coefficients)
+				}
+				r = compressedSizeFloor
+			}
 			return r, nil
 		}
 	}
@@ -410,7 +430,7 @@ func prettyPrintStats(prefix string, estimators []estimator, stats ...[]float64)
 
 	formatString := "%v\t%v\t"
 	for i := 0; i < len(stats); i++ {
-		formatString += "%.2f\t"
+		formatString += "%.3f\t"
 	}
 	formatString += "\n"
 	for j := range estimators {
@@ -555,7 +575,7 @@ func cheap8Estimator(tx []byte) float64 {
 // batches.  Should bootstrap it before use by calling it on several samples of representative
 // data.
 type zlibBatchEstimator struct {
-	b [2]bytes.Buffer
+	b [2]*bytes.Buffer
 	w [2]*zlib.Writer
 }
 
@@ -569,7 +589,8 @@ func newZlibBatchEstimator() *zlibBatchEstimator {
 	b := &zlibBatchEstimator{}
 	var err error
 	for i := range b.w {
-		b.w[i], err = zlib.NewWriterLevel(&b.b[i], zlib.BestCompression)
+		b.b[i] = new(bytes.Buffer)
+		b.w[i], err = zlib.NewWriterLevel(b.b[i], zlib.BestCompression)
 		if err != nil {
 			log.Fatalln(err)
 		}
@@ -580,7 +601,7 @@ func newZlibBatchEstimator() *zlibBatchEstimator {
 func (w *zlibBatchEstimator) reset() {
 	for i := range w.w {
 		w.b[i].Reset()
-		w.w[i].Reset(&w.b[i])
+		w.w[i].Reset(w.b[i])
 	}
 }
 
@@ -614,16 +635,16 @@ func (w *zlibBatchEstimator) write(p []byte) float64 {
 			log.Fatalln(err)
 		}
 	}
-	// if b[1] > 128kb, rotate
+	// if b[1] > 128kb, rotate and clear shadow buffer b[0]
 	if w.b[1].Len() > numBlobs*128*1024 {
-		w.b[1].Reset()
-		w.w[1].Reset(&w.b[1])
 		tb := w.b[1]
 		tw := w.w[1]
 		w.b[1] = w.b[0]
 		w.w[1] = w.w[0]
 		w.b[0] = tb
 		w.w[0] = tw
+		w.b[0].Reset()
+
 	}
 	r := float64(after - before - 2) // flush writes 2 extra "sync" bytes so don't count those
 	if spanBatchMode {
