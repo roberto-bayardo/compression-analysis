@@ -20,7 +20,7 @@ type TxIterRPC struct {
 }
 
 func NewTxIterRPC(rpcEndpoint string, startBlock *big.Int) *TxIterRPC {
-	fmt.Println("Starting block: %v, RPC endpoint: %v\n", startBlock, rpcEndpoint)
+	fmt.Printf("Starting block: %v, RPC endpoint: %v\n", startBlock, rpcEndpoint)
 	it := &TxIterRPC{}
 	var err error
 	if strings.HasPrefix(rpcEndpoint, "http://") || strings.HasPrefix(rpcEndpoint, "https://") {
