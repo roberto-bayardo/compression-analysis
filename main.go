@@ -701,6 +701,9 @@ func flzCompressLen(ib []byte) uint32 {
 	}
 	a := uint32(0)
 	ipLimit := uint32(len(ib)) - 13
+	if len(ib) < 13 {
+		ipLimit = 0
+	}
 	for ip := a + 2; ip < ipLimit; {
 		r := uint32(0)
 		d := uint32(0)
