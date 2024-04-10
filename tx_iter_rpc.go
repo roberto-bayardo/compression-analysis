@@ -23,7 +23,7 @@ func NewTxIterRPC(rpcEndpoint string, startBlock *big.Int) *TxIterRPC {
 	fmt.Printf("Starting block: %v, RPC endpoint: %v\n", startBlock, rpcEndpoint)
 	it := &TxIterRPC{}
 	var err error
-	if strings.HasPrefix(rpcEndpoint, "http://") || strings.HasPrefix(rpcEndpoint, "https://") {
+	if strings.HasPrefix(rpcEndpoint, "http://") || strings.HasPrefix(rpcEndpoint, "https://") || strings.HasSuffix(rpcEndpoint, ".ipc") {
 		it.client, err = ethclient.Dial(rpcEndpoint)
 	} else {
 		it.client, err = NewLocalClient(rpcEndpoint)
@@ -67,4 +67,8 @@ func (it *TxIterRPC) Next() []byte {
 
 func (it *TxIterRPC) Close() {
 	it.client.Close()
+}
+
+func (it *TxIterRPC) BlockNumber() *big.Int {
+	return it.block.Number()
 }
