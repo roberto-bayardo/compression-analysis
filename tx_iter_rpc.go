@@ -6,6 +6,7 @@ import (
 	"log"
 	"math/big"
 	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -45,11 +46,15 @@ func (it *TxIterRPC) Next() []byte {
 	txs := it.block.Transactions()
 	var err error
 	if it.nextTx == len(txs) {
-		it.block, err = it.client.BlockByHash(context.Background(), it.block.ParentHash())
+	again:
+		block, err := it.client.BlockByHash(context.Background(), it.block.ParentHash())
 		if err != nil {
-			log.Fatalln(err)
+			log.Println("rpc failure:", err, "sleeping then trying again")
+			time.Sleep(time.Minute)
+			goto again
 		}
 		it.nextTx = 0
+		it.block = block
 		return it.Next()
 	}
 

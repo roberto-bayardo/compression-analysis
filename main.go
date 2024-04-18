@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"text/tabwriter"
 
+	"github.com/google/brotli/go/cbrotli"
 	"github.com/montanaflynn/stats"
 )
 
@@ -21,14 +22,14 @@ type estimator func([]byte) float64
 
 // type model takes as input a feature vector for a serialized transaction and outputs a prediction
 // for the size of that transaction after batch compression.
-type model func(data []float64) (float64, error)
+type model func(data []float64) float64
 
 var (
-	txsToFetch = 20000000 // max # of transactions to include in our sample
+	txsToFetch = 1000000 // max # of transactions to include in our sample
 
 	// If this is true, then the functions will be derived on the oldest half of the transactions,
 	// and evaluated on the newer half.
-	separateTrainTest = true
+	separateTrainTest = false
 
 	// spanBatchMode will remove signatures from the tx rlp before compression. This simulates the
 	// behavior of span batches which segregates the signatures from the more compressible parts of
@@ -46,7 +47,7 @@ var (
 
 	// compressedSizeFloor is the smallest size we ever expect a transaction to reach after batch
 	// compression.  It is used to lower-bound model outputs.
-	compressedSizeFloor = 71.
+	compressedSizeFloor = 100.
 )
 
 type regression struct {
@@ -65,18 +66,17 @@ func init() {
 func main() {
 	fmt.Printf("Tx sample size: %v, span batch mode: %v, num blobs: %v\n", txsToFetch, spanBatchMode, numBlobs)
 
-	//clientLocation = "https://mainnet.base.org"
-	//clientLocation = "https://base-mainnet-dev.cbhq.net:8545"
-	//clientLocation := "/nvme/op-geth/snapdata-path/geth.ipc"
-	//clientLocation := "/nvme/op-geth/snapdata-path/"
-	//blockNum := big.NewInt(10000000) // starting block; will iterate backwards from here
+	//clientLocation := "https://mainnet.base.org"
+	//clientLocation := "/data"
+	//clientLocation := "https://base-mainnet-dev.cbhq.net:8545"
+	//blockNum := big.NewInt(13723900) // starting block; will iterate backwards from here
 	//txIter := NewTxIterRPC(clientLocation, blockNum)
 
-	//txFilename := "/Users/bayardo/tmp/op_post_ecotone_txs_result.bin"
-	//txFilename := "/Users/bayardo/tmp/base_post_ecotone_txs.bin"
-	txFilename := "./base-txs-post-ecotone-to-apr-10.bin"
+	//txFilename := "./base-txs-jan-2024.bin"
+	txFilename := "/Users/bayardo/tmp/op_post_ecotone_txs_result.bin"
+	//txFilename := "/Users/bayardo/tmp/op-txs-oct-2024.bin"
+	//txFilename := "./base-txs-post-ecotone-to-apr-10.bin"
 	txIter := NewTxIterFile(txFilename)
-
 	defer txIter.Close()
 
 	if separateTrainTest {
@@ -98,19 +98,21 @@ func main() {
 		//repeatedByte2Estimator,
 		//repeatedOrZeroEstimator,
 		fastLZEstimator,
-		cheap4Estimator, // TEMP to save CPU
-		//zlibBestEstimator,
-		zlibBestBatchEstimator, // final estimator value is always used as the "ground truth" against which others are measured
+		zlibBestEstimator,
+		//brotliEstimator,
+		//zlibBestBatchEstimator,
+		brotliBatchEstimator, // final estimator value is always used as the "ground truth" against which others are measured
 	}
 	columns := make([][]float64, len(estimators))
 
 	log.Println("bootstrapping")
 	bootstrapCount := 0
-	for b := txIter.Next(); !batchEstimatorObj.bootstrapped; b = txIter.Next() {
+	for b := txIter.Next(); !zlibBatchEstimatorObj.bootstrapped || !brotliBatchEstimatorObj.bootstrapped; b = txIter.Next() {
 		if b == nil {
 			log.Fatalln("ran out of transactions bootstrapping")
 		}
 		zlibBestBatchEstimator(b)
+		brotliBatchEstimator(b)
 		bootstrapCount++
 	}
 	log.Println("finished bootstrapping over", bootstrapCount, "transactions")
@@ -132,6 +134,9 @@ func main() {
 			break
 		}
 	}
+
+	//doEvaluate(columns)
+	//return
 
 	start := 0
 	end := len(columns[0])
@@ -192,8 +197,8 @@ func main() {
 	for j := range estimators {
 		scalar := avgs[len(avgs)-1] / avgs[j]
 		scalars[j] = scalar
-		scalarModels[j] = func(data []float64) (float64, error) {
-			return data[0] * scalar, nil
+		scalarModels[j] = func(data []float64) float64 {
+			return data[0] * scalar
 		}
 	}
 	fmt.Println()
@@ -239,40 +244,6 @@ func main() {
 	}
 }
 
-func evaluateModel(columns [][]float64, model model) (mae, rmse float64) {
-	absoluteErrors := make([]float64, len(columns[0]))
-	squaredErrors := make([]float64, len(columns[0]))
-
-	for i := range columns[0] {
-		// final column is always used as ground truth
-		truth := columns[len(columns)-1][i]
-		var estimate float64
-		data := make([]float64, len(columns)-1)
-		for j := 0; j < len(columns)-1; j++ {
-			data[j] = columns[j][i]
-		}
-		var err error
-		estimate, err = model(data)
-		if err != nil {
-			log.Fatalln(err)
-		}
-		e := estimate - truth
-		absoluteErrors[i] = math.Abs(e)
-		squaredErrors[i] = math.Pow(e, 2)
-	}
-
-	mae, err := stats.Mean(stats.Float64Data(absoluteErrors))
-	if err != nil {
-		log.Fatalln(err)
-	}
-	mse, err := stats.Mean(stats.Float64Data(squaredErrors))
-	if err != nil {
-		log.Fatalln(err)
-	}
-	rmse = math.Sqrt(mse)
-	return mae, rmse
-}
-
 func evaluate(columns [][]float64, models []model) (mae []float64, rmse []float64) {
 	// compute per-tx error values
 	absoluteErrors := make([][]float64, len(columns))
@@ -287,11 +258,7 @@ func evaluate(columns [][]float64, models []model) (mae []float64, rmse []float6
 			truth := columns[len(columns)-1][i]
 			var estimate float64
 			data := []float64{columns[j][i], columns[0][i]}
-			var err error
-			estimate, err = models[j](data)
-			if err != nil {
-				log.Fatalln(err)
-			}
+			estimate = models[j](data)
 			e := estimate - truth
 			ae[i] = math.Abs(e)
 			se[i] = math.Pow(e, 2)
@@ -421,7 +388,7 @@ func doRegression(estimators []estimator, columns [][]float64, uncompressedSizeF
 			}
 		}
 		fmt.Printf("\nRegression %v: %v\n", getFuncName(estimators[j]), reg)
-		models[j] = func(row []float64) (float64, error) {
+		models[j] = func(row []float64) float64 {
 			if !uncompressedSizeFeature {
 				row = row[:1]
 			}
@@ -429,7 +396,7 @@ func doRegression(estimators []estimator, columns [][]float64, uncompressedSizeF
 			if r < compressedSizeFloor {
 				r = compressedSizeFloor
 			}
-			return r, nil
+			return r
 		}
 	}
 	return models
@@ -543,6 +510,20 @@ func zlibBestEstimator(tx []byte) float64 {
 	return float64(b.Len() - 2) // flush writes 2 extra "sync" bytes so don't count those
 }
 
+var b2 bytes.Buffer
+
+// brotliEstimator runs a freshly reset brotli compressor at level 10.
+// This function is not thread safe.
+func brotliEstimator(tx []byte) float64 {
+	b2.Reset()
+	w2 := cbrotli.NewWriter(&b2, cbrotli.WriterOptions{Quality: 10})
+	w2.Write(tx)
+	w2.Flush()                 // flush instead of close to not include the digest
+	r := float64(b2.Len() - 2) // flush writes 2 extra "sync" bytes so don't count those
+	w2.Close()
+	return r
+}
+
 func fastLZEstimator(tx []byte) float64 {
 	return float64(flzCompressLen(tx))
 }
@@ -592,92 +573,6 @@ func cheap7Estimator(tx []byte) float64 {
 
 func cheap8Estimator(tx []byte) float64 {
 	return cheapEstimator(tx, 8, 16)
-}
-
-// zlibBestBatchEstimator simulates a zlib compressor at max compression that works on (large) tx
-// batches.  Should bootstrap it before use by calling it on several samples of representative
-// data.  This function is not thread safe.
-func zlibBestBatchEstimator(tx []byte) float64 {
-	return batchEstimatorObj.write(tx)
-}
-
-var batchEstimatorObj = newZlibBatchEstimatorObj()
-
-type zlibBatchEstimator struct {
-	b [2]*bytes.Buffer
-	w [2]*zlib.Writer
-	// bootstrapped is set to true once this estimator has processed enough transactions to be
-	// considered reliable in its output
-	bootstrapped bool
-}
-
-func newZlibBatchEstimatorObj() *zlibBatchEstimator {
-	b := &zlibBatchEstimator{}
-	var err error
-	for i := range b.w {
-		b.b[i] = new(bytes.Buffer)
-		b.w[i], err = zlib.NewWriterLevel(b.b[i], zlib.BestCompression)
-		if err != nil {
-			log.Fatalln(err)
-		}
-	}
-	return b
-}
-
-func (w *zlibBatchEstimator) reset() {
-	for i := range w.w {
-		w.b[i].Reset()
-		w.w[i].Reset(w.b[i])
-	}
-	w.bootstrapped = false
-}
-
-func (w *zlibBatchEstimator) write(p []byte) float64 {
-	if spanBatchMode {
-		// span batch mode segregates the tx signatures, which we simulate by stripping them out
-		// before compression and treating them as 65 uncompressible bytes.
-		p = p[:len(p)-65]
-	}
-	// targeting:
-	//	b[0] == 0-64kb
-	//	b[1] == 64kb-128kb
-	before := w.b[1].Len()
-	_, err := w.w[1].Write(p)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	err = w.w[1].Flush()
-	if err != nil {
-		log.Fatalln(err)
-	}
-	after := w.b[1].Len()
-	// if b[1] > 64kb, write to b[0]
-	if w.b[1].Len() > numBlobs*64*1024 {
-		_, err = w.w[0].Write(p)
-		if err != nil {
-			log.Fatalln(err)
-		}
-		err = w.w[0].Flush()
-		if err != nil {
-			log.Fatalln(err)
-		}
-		w.bootstrapped = true
-	}
-	// if b[1] > 128kb, rotate and clear shadow buffer b[0]
-	if w.b[1].Len() > numBlobs*128*1024 {
-		tb := w.b[1]
-		tw := w.w[1]
-		w.b[1] = w.b[0]
-		w.w[1] = w.w[0]
-		w.b[0] = tb
-		w.w[0] = tw
-		w.b[0].Reset()
-	}
-	r := float64(after - before - 2) // flush writes 2 extra "sync" bytes so don't count those
-	if spanBatchMode {
-		return r + 65.
-	}
-	return r
 }
 
 var (
