@@ -21,7 +21,7 @@ type estimator func([]byte) float64
 
 // type model takes as input a feature vector for a serialized transaction and outputs a prediction
 // for the size of that transaction after batch compression.
-type model func(data []float64) (float64, error)
+type model func(data []float64) float64
 
 var (
 	txsToFetch = 20000000 // max # of transactions to include in our sample
@@ -67,16 +67,14 @@ func main() {
 
 	//clientLocation = "https://mainnet.base.org"
 	//clientLocation = "https://base-mainnet-dev.cbhq.net:8545"
-	//clientLocation := "/nvme/op-geth/snapdata-path/geth.ipc"
-	//clientLocation := "/nvme/op-geth/snapdata-path/"
-	//blockNum := big.NewInt(10000000) // starting block; will iterate backwards from here
+	//clientLocation = "/data"
+	//blockNum   = big.NewInt(12000000) // starting block; will iterate backwards from here
 	//txIter := NewTxIterRPC(clientLocation, blockNum)
 
 	//txFilename := "/Users/bayardo/tmp/op_post_ecotone_txs_result.bin"
 	//txFilename := "/Users/bayardo/tmp/base_post_ecotone_txs.bin"
-	txFilename := "./base-txs-post-ecotone-to-apr-10.bin"
+	txFilename := "./op-txs-oct-2024.bin"
 	txIter := NewTxIterFile(txFilename)
-
 	defer txIter.Close()
 
 	if separateTrainTest {
@@ -98,8 +96,7 @@ func main() {
 		//repeatedByte2Estimator,
 		//repeatedOrZeroEstimator,
 		fastLZEstimator,
-		cheap4Estimator, // TEMP to save CPU
-		//zlibBestEstimator,
+		zlibBestEstimator,
 		zlibBestBatchEstimator, // final estimator value is always used as the "ground truth" against which others are measured
 	}
 	columns := make([][]float64, len(estimators))
@@ -192,8 +189,8 @@ func main() {
 	for j := range estimators {
 		scalar := avgs[len(avgs)-1] / avgs[j]
 		scalars[j] = scalar
-		scalarModels[j] = func(data []float64) (float64, error) {
-			return data[0] * scalar, nil
+		scalarModels[j] = func(data []float64) float64 {
+			return data[0] * scalar
 		}
 	}
 	fmt.Println()
@@ -251,11 +248,7 @@ func evaluateModel(columns [][]float64, model model) (mae, rmse float64) {
 		for j := 0; j < len(columns)-1; j++ {
 			data[j] = columns[j][i]
 		}
-		var err error
-		estimate, err = model(data)
-		if err != nil {
-			log.Fatalln(err)
-		}
+		estimate = model(data)
 		e := estimate - truth
 		absoluteErrors[i] = math.Abs(e)
 		squaredErrors[i] = math.Pow(e, 2)
@@ -287,11 +280,7 @@ func evaluate(columns [][]float64, models []model) (mae []float64, rmse []float6
 			truth := columns[len(columns)-1][i]
 			var estimate float64
 			data := []float64{columns[j][i], columns[0][i]}
-			var err error
-			estimate, err = models[j](data)
-			if err != nil {
-				log.Fatalln(err)
-			}
+			estimate = models[j](data)
 			e := estimate - truth
 			ae[i] = math.Abs(e)
 			se[i] = math.Pow(e, 2)
@@ -421,7 +410,7 @@ func doRegression(estimators []estimator, columns [][]float64, uncompressedSizeF
 			}
 		}
 		fmt.Printf("\nRegression %v: %v\n", getFuncName(estimators[j]), reg)
-		models[j] = func(row []float64) (float64, error) {
+		models[j] = func(row []float64) float64 {
 			if !uncompressedSizeFeature {
 				row = row[:1]
 			}
@@ -429,7 +418,7 @@ func doRegression(estimators []estimator, columns [][]float64, uncompressedSizeF
 			if r < compressedSizeFloor {
 				r = compressedSizeFloor
 			}
-			return r, nil
+			return r
 		}
 	}
 	return models
@@ -672,6 +661,7 @@ func (w *zlibBatchEstimator) write(p []byte) float64 {
 		w.b[0] = tb
 		w.w[0] = tw
 		w.b[0].Reset()
+		w.w[0].Reset(w.b[0])
 	}
 	r := float64(after - before - 2) // flush writes 2 extra "sync" bytes so don't count those
 	if spanBatchMode {
